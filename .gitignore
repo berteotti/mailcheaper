@@ -16,6 +16,10 @@
 # next.js
 /.next/
 /out/
+/dist/
+/.alchemy/
+/.wrangler/
+/.vinext/
 
 # production
 /build
@@ -33,8 +37,6 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
-# vercel
-.vercel
 
 # typescript
 *.tsbuildinfo

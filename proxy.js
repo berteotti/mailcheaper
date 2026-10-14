@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { getArchiveHostUrl, getArchiveSlugForHost } from "@/lib/archive-hosts";
 import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
 
-// Reachable without a session: recipients, mail providers, AWS, QStash, and API-key clients.
+// Reachable without a session: recipients, mail providers, AWS, API-key clients, and the jobs Worker
+// (its internal routes check their own key).
 const PUBLIC_PATHS = [
 	/^\/favicon\.ico$/,
 	/^\/login$/,
@@ -12,12 +13,13 @@ const PUBLIC_PATHS = [
 	/^\/o\//,
 	/^\/c\//,
 	/^\/p\//,
+	/^\/media\//,
 	/^\/archive\//,
 	/^\/api\/unsubscribe$/,
 	/^\/api\/views$/,
 	/^\/api\/v1\//,
 	/^\/api\/webhooks\//,
-	/^\/api\/jobs\//,
+	/^\/api\/internal\//,
 ];
 
 // A public archive domain never exposes the dashboard, not even its login page.

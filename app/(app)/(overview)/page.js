@@ -22,9 +22,8 @@ import SwatchChart from "@/components/SwatchChart";
 import TableCampaigns from "@/components/TableCampaigns";
 import TabsNewsletter from "@/components/TabsNewsletter";
 import { Button } from "@/components/ui/button";
-import { recentCampaignsPipeline } from "@/lib/campaign-queries";
+import { listRecentCampaigns } from "@/lib/campaign-queries";
 import { listNewslettersWithActiveCounts } from "@/lib/contacts";
-import { connectDb } from "@/lib/db";
 import { formatCompact, formatNumber, formatSigned } from "@/lib/format";
 import { NEWSLETTER_SUMMARY_FIELDS, toNewsletterMap, toNewsletterOptions } from "@/lib/newsletters";
 import { getEmailStats, getHourlySends, getSubscriberHistory } from "@/lib/overview-data";
@@ -32,12 +31,11 @@ import { PERIOD_DAYS } from "@/lib/overview-series";
 import { getSesAccount, listSesDomains } from "@/lib/ses";
 import { TIME_ZONE_COOKIE, resolveTimeZone, timeZoneLabel } from "@/lib/time-zone";
 import { cn } from "@/lib/utils";
-import Campaign from "@/models/Campaign";
 
 // Everything above Domains is about one newsletter, the largest unless ?newsletter= picks one. The page
 // waits for one query (the tabs); every section then loads on its own behind a skeleton of its size.
 export default async function OverviewPage({ searchParams }) {
-	const [{ newsletter: newsletterParam }, cookieStore] = await Promise.all([searchParams, cookies(), connectDb()]);
+	const [{ newsletter: newsletterParam }, cookieStore] = await Promise.all([searchParams, cookies()]);
 	const timeZone = resolveTimeZone(cookieStore.get(TIME_ZONE_COOKIE)?.value);
 	const newsletters = await listNewslettersWithActiveCounts(NEWSLETTER_SUMMARY_FIELDS);
 	const bySize = newsletters.toSorted((a, b) => b.activeCount - a.activeCount);
@@ -193,7 +191,7 @@ async function CardSends({ newsletterId, timeZone }) {
 }
 
 async function TableRecentCampaigns({ newsletterId, newsletters }) {
-	const campaigns = await Campaign.aggregate(recentCampaignsPipeline(5, newsletterId));
+	const campaigns = await listRecentCampaigns(5, newsletterId);
 	if (campaigns.length === 0) {
 		return (
 			<p className="rounded-xl px-4 py-6 text-center text-sm text-muted-foreground shadow-border animate-fade-in">

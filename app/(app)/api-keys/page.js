@@ -14,15 +14,13 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { getAppUrl } from "@/lib/config";
-import { connectDb } from "@/lib/db";
+import { getAll } from "@/lib/db";
 import { formatDate, formatRelative } from "@/lib/format";
-import ApiKey from "@/models/ApiKey";
 
 export const metadata = { title: "API keys" };
 
 export default async function ApiKeysPage() {
-	await connectDb();
-	const apiKeys = await ApiKey.find().sort({ createdAt: -1 }).select("-hash").lean();
+	const apiKeys = await getAll("SELECT _id, name, prefix, lastUsedAt, revokedAt, createdAt, updatedAt FROM api_keys ORDER BY createdAt DESC, _id DESC");
 	const examples = getExamples(getAppUrl());
 
 	return (

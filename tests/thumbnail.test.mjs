@@ -3,9 +3,10 @@ import { test } from "node:test";
 import { formatRate } from "../lib/format.js";
 import { firstImageUrl, isOptimizableImage } from "../lib/thumbnail.js";
 
-test("only local and Blob pictures go through Next's resizer", () => {
+test("only bundled local pictures go through the image route; uploads load as they are", () => {
 	assert.equal(isOptimizableImage("/authors/jane.jpg"), true);
-	assert.equal(isOptimizableImage("https://abc123.public.blob.vercel-storage.com/uploads/a-x.webp"), true);
+	assert.equal(isOptimizableImage("https://assets.example.com/images/a-0123456789abcdef01234567.webp"), false);
+	assert.equal(isOptimizableImage("//evil.test/a.png"), false);
 	assert.equal(isOptimizableImage("https://images.example.com/uploads/a.png"), false);
 	assert.equal(isOptimizableImage("https://mailcheap.example.com/archive/weekly/og?p=x"), false);
 	assert.equal(isOptimizableImage("https://evil.test/x.public.blob.vercel-storage.com/a.png"), false);

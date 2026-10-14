@@ -4,8 +4,6 @@ Mailcheap is a self-hosted newsletter app on Amazon SES. Write an issue, send it
 
 ![Mailcheap overview](docs/screenshots/overview.webp)
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmarclou%2Fmailcheap&project-name=mailcheap&repository-name=mailcheap&env=MONGODB_URI,ADMIN_EMAIL,ADMIN_PASSWORD,SESSION_SECRET&envDescription=Database%2C%20login%20and%20signing%20secret.%20ADMIN_PASSWORD%20needs%2012%2B%20characters%2C%20SESSION_SECRET%2032%2B%20%28run%3A%20openssl%20rand%20-base64%2048%29.%20Add%20SES%20and%20QStash%20after%20the%20first%20deploy.&envLink=https%3A%2F%2Fgithub.com%2Fmarclou%2Fmailcheap%23environment-variables)
-
 > [!IMPORTANT]
 > **No support.** This is a one-time open-source release. Issues are off, and setup questions go unanswered. Fork it, deploy it, make it yours.
 
@@ -13,7 +11,7 @@ Mailcheap is a self-hosted newsletter app on Amazon SES. Write an issue, send it
 
 Newsletter platforms charge for every subscriber, every month. With your own SES account you pay for the emails you send: 10,000 readers and 4 issues a month is 40,000 emails, about $4.
 
-Mailcheap is the rest of what a newsletter needs, in one small Next.js app: an editor, a list, signup forms, unsubscribe handling, bounce and complaint handling, stats and a public archive. One admin, no teams, no plans. Your list stays in your database.
+Mailcheap is the rest of what a newsletter needs, in one small Next.js app on Cloudflare Workers: an editor, a list, signup forms, unsubscribe handling, bounce and complaint handling, stats and a public archive. One admin, no teams, no plans. Your list stays in your own Cloudflare D1 database.
 
 ## Features
 
@@ -21,7 +19,7 @@ Mailcheap is the rest of what a newsletter needs, in one small Next.js app: an e
 
 - Editor with a live email preview, slash commands, image uploads and boxes. Markdown and raw HTML work too.
 - Checks before every send: subject, preview text, unsubscribe link, size under Gmail's 100 KB clip, postal address, verified domain.
-- Test emails, scheduling, and sending in batches through QStash at the rate you set.
+- Test emails, scheduling, and sending in batches through Cloudflare Queues at the rate you set.
 - Send in steps: start with your most engaged readers, then send to more.
 
 **Grow the list**
@@ -68,43 +66,65 @@ All names and addresses in the screenshots are made up.
 
 | Service | For | Cost |
 | --- | --- | --- |
-| [MongoDB](https://www.mongodb.com/atlas) | Contacts, campaigns, stats | Free tier works |
+| [Cloudflare Workers Paid](https://developers.cloudflare.com/workers/platform/pricing/) | Hosting (two Workers), D1 database, R2 images and backups, Queues, Durable Objects, cron | $5/month base, plus usage beyond the included amounts |
 | [Amazon SES](https://aws.amazon.com/ses/) | Sending | About $0.10 per 1,000 emails |
-| [Upstash QStash](https://upstash.com/docs/qstash) | Background sending and scheduling | Free tier to start, then pay per message. One message sends 50 emails. |
-| [Vercel](https://vercel.com) or any Node.js host | Hosting | Free tier works |
-| [Upstash Redis](https://upstash.com/docs/redis) (optional) | Rate limits shared by every server instance | Free tier |
-| [Vercel Blob](https://vercel.com/docs/vercel-blob) (optional) | Image uploads in the editor | Free tier |
+| Amazon SNS | Delivering SES bounces, complaints and deliveries to Mailcheap | Free at newsletter volumes |
+| A domain on Cloudflare (recommended) | Dashboard, email links, images | Your registrar's price |
 
-Without Redis, Mailcheap counts the same rate limits in each server instance's memory. That still stops a script hammering a form, but on serverless hosts the limits aren't shared between instances and reset on each deploy. Add Redis before you put a signup form on a busy site.
-
-Without Blob, image uploads in the editor are off. HTML and Markdown campaigns can still use images hosted anywhere.
+[Alchemy](https://alchemy.run) creates and wires every Cloudflare resource from [`alchemy.run.ts`](alchemy.run.ts): you never create a database, bucket or queue by hand. The app runs on [vinext](https://vinext.dev), Cloudflare's Vite-based implementation of the Next.js API.
 
 ## Setup
 
 Plan for about an hour, most of it waiting for DNS and for AWS to approve production access.
 
-### 1. Database
+### 1. Install
 
-1. Create a free cluster on [MongoDB Atlas](https://www.mongodb.com/atlas).
-2. **Database Access**: add a user with a password and the "Read and write to any database" role.
-3. **Network Access**: allow `0.0.0.0/0`. Vercel doesn't have fixed IP addresses.
-4. **Connect > Drivers**: copy the connection string and add a database name before the `?`, like `...mongodb.net/mailcheap?retryWrites=true`. That's your `MONGODB_URI`.
+Node.js 24.11+ (see `.nvmrc`) and npm:
 
-### 2. Deploy
+```bash
+git clone https://github.com/<you>/mailcheap.git && cd mailcheap
+npm ci
+cp .env.example .env
+```
 
-1. Click **Deploy** above.
-2. Fill in `MONGODB_URI`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` (at least 12 characters) and `SESSION_SECRET` (at least 32; generate it with `openssl rand -base64 48`). With shorter ones, Mailcheap refuses to start and the logs say which one to fix.
-3. Open `https://<your-project>.vercel.app/login` and log in.
+In `.env`, set `ADMIN_EMAIL`, `ADMIN_PASSWORD` (12+ characters) and `SESSION_SECRET` (`openssl rand -base64 48`). Generate a new secret for each install and keep it: email links depend on it. `.env` is ignored by Git.
 
-Sending is off until you finish the next steps, so nothing can go out by mistake. On any other Node.js host: `npm ci && npm run build && npm start`, with the same variables, behind HTTPS.
+### 2. Connect Alchemy to Cloudflare
 
-If you plan to use your own domain for the dashboard (like `mailcheap.example.com`), add it in Vercel now and set `APP_URL` to it. Links in your emails use `APP_URL`, so it should be final before your first send.
+Create an Alchemy profile and connect your Cloudflare account (`npx alchemy profile create`, then `npx alchemy profile edit`; `npx alchemy provider cloudflare --help` lists the prerequisites). In CI, set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` instead.
 
-### 3. Amazon SES
+Deployment state lives in your Cloudflare account (`Cloudflare.state()`), so any machine with access can deploy the same stages. **The first `plan`, `deploy` or non-local `dev` creates that state store** (a small Worker, a Durable Object and Secrets Store entries) in the account. Nothing else needs creating by hand.
+
+### 3. Try it locally
+
+```bash
+npm run dev
+```
+
+This runs `alchemy dev --stage local`: both Workers with local D1, R2, Queues, Durable Objects and cron, state in `.alchemy/` (ignored). Open the printed URL and log in. Nothing is sent while `SENDING_ENABLED` isn't `true`. Never point `dev` at `--stage prod`: it would replace that stage's Workers.
+
+### 4. Deploy
+
+Set `APP_DOMAIN` (and optionally `ASSET_DOMAIN`) to subdomains of a zone on the same Cloudflare account before your first real email: every link in sent emails uses them. Then:
+
+```bash
+npm run deploy -- --stage prod
+```
+
+Use a separate env file per stage if their values differ (`--env-file .env.prod`). The deploy:
+
+1. creates or reuses D1, the R2 asset and backup buckets, the jobs queue and its dead-letter queue;
+2. applies new SQL files from `migrations/` to D1, in order and once each (they're recorded in D1), before the new code goes live;
+3. builds and deploys the app Worker (dashboard, APIs, archive, SES webhook, rate-limit and SES-pacing Durable Objects) and the jobs Worker (queue consumer, minute cron, daily backup);
+4. prints `url` and `sesWebhookUrl`.
+
+Running it again updates the same resources and keeps their data. In `prod`, D1 and both buckets are retained even if the stack is destroyed. Try `--stage staging` first: each stage has its own resources and secrets.
+
+### 5. Amazon SES and SNS
 
 Use one AWS region for everything below (the examples use `us-east-1`).
 
-1. **Verify a sending domain.** In the SES console, go to **Identities > Create identity > Domain**. Use a subdomain like `mail.example.com`, so your main domain's email is unaffected. Keep Easy DKIM with RSA 2048 and add the 3 CNAME records SES gives you at your DNS provider.
+1. **Verify a sending domain.** In the SES console, go to **Identities > Create identity > Domain**. Use a subdomain like `mail.example.com`, so your main domain's email is unaffected. Keep Easy DKIM with RSA 2048 and add the 3 CNAME records SES gives you. On Cloudflare DNS, keep them **DNS only** (grey cloud).
 2. **Set a custom MAIL FROM domain.** On the identity, open **Custom MAIL FROM domain > Edit**, use `bounce.mail.example.com`, and add the MX and TXT records SES shows. This aligns SPF with your domain.
 3. **Add DMARC** if your root domain doesn't have one: a TXT record at `_dmarc.example.com` with `v=DMARC1; p=none;` to start. Gmail and Yahoo require DMARC from bulk senders.
 4. **Request production access.** New accounts are in the sandbox (200 emails a day, verified recipients only). In **Account dashboard > Request production access**, pick Marketing, and explain that readers opt in, that bounces and complaints are suppressed automatically, and that every email has one-click unsubscribe. AWS usually answers within a day.
@@ -134,47 +154,43 @@ Use one AWS region for everything below (the examples use `us-east-1`).
 }
 ```
 
-9. **Add the variables in Vercel** and redeploy: `SES_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY`, `SES_CONFIGURATION_SET` and `SES_SNS_TOPIC_ARN`.
-10. **Subscribe Mailcheap to the topic.** In the SNS topic, **Create subscription** with protocol HTTPS and endpoint `https://<your-app>/api/webhooks/ses`. Leave raw message delivery off. Mailcheap confirms the subscription by itself; refresh and the status turns to Confirmed.
+9. **Add the variables to `.env`** and deploy again: `SES_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY`, `SES_CONFIGURATION_SET` and `SES_SNS_TOPIC_ARN`.
+10. **Subscribe Mailcheap to the topic.** In the SNS topic, **Create subscription** with protocol HTTPS and the `sesWebhookUrl` the deploy printed. Leave raw message delivery off. Mailcheap confirms the subscription by itself; refresh and the status turns to Confirmed.
 
 The **Domains** page in Mailcheap now shows your domain with its DKIM and MAIL FROM status. Optional: in SES **Account dashboard > Suppression list**, turn on the account-level list for bounces and complaints too.
 
-### 4. QStash
-
-1. In the [Upstash console](https://console.upstash.com/qstash), open QStash and copy `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY` and `QSTASH_NEXT_SIGNING_KEY` (and `QSTASH_URL` if you picked a region other than the default).
-2. Add them in Vercel and redeploy.
-
-QStash calls `APP_URL/api/jobs/...` to send each batch, so the app has to be reachable on the internet. Mailcheap checks QStash's signature on every job.
-
-### 5. Turn sending on
+### 6. Turn sending on
 
 1. In Mailcheap, create a newsletter. The from address must be on your verified domain, and the postal address shows in every email's footer (anti-spam laws require one).
-2. Set `SENDING_ENABLED=true` in Vercel and redeploy.
-3. Write a campaign, send yourself a test, then send. For a new domain, set a limit to reach your most engaged readers first, and use **Send to more** on the report once the first step looks healthy.
+2. Set `SENDING_ENABLED=true` and deploy again. On a staging stage, only send to your own test addresses.
+3. Send yourself a test, then check delivery, the unsubscribe link, and a bounce (`bounce@simulator.amazonses.com`) on the campaign report and the Contacts page.
+4. Write a campaign and send it. For a new domain, set a limit to reach your most engaged readers first, and use **Send to more** on the report once the first step looks healthy.
 
 ### Optional
 
-- **Archive on its own domain:** add the domain to your Vercel project, then set `ARCHIVE_HOSTS=news.example.com=<newsletter-slug>` and redeploy. That domain serves only the archive and the unsubscribe page, never the dashboard, and the app domain's `/archive/<newsletter-slug>` pages redirect there.
+- **Archive on its own domain:** route the domain to the app Worker (a custom domain or route on the Worker in the Cloudflare dashboard, or add it to `alchemy.run.ts`), then set `ARCHIVE_HOSTS=news.example.com=<newsletter-slug>` and deploy. That domain serves only the archive and the unsubscribe page, never the dashboard, and the app domain's `/archive/<newsletter-slug>` pages redirect there.
 
   This is the safer setup: issue pages show HTML from your editor and from API keys, and on their own domain that HTML never shares the dashboard's origin. Without one, the archive stays on the app domain, where the sanitizer, the sandboxed frame and the Content Security Policy protect it.
-- **Image uploads:** in Vercel, **Storage > Create > Blob**, connect it to the project, and redeploy.
-- **Shared rate limits:** create a Redis database in the [Upstash console](https://console.upstash.com/redis) and add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.
-- **Alerts:** set `ALERT_FROM` (like `Mailcheap <alerts@mail.example.com>`) to get alerts by email at `ADMIN_EMAIL`: spam complaints, paused sends, signup floods and rate limiter outages, plus every login, new API key and send. Otherwise they only show in the logs.
+- **Alerts:** set `ALERT_FROM` (like `Mailcheap <alerts@mail.example.com>`) to get alerts by email at `ADMIN_EMAIL`: spam complaints, paused sends, unconfirmed sends, signup floods and rate limiter outages, plus every login, new API key and send. Otherwise they only show in the logs.
+- **Deploy from GitHub:** `.github/workflows/deploy.yml` runs the same `npm run deploy` for a chosen stage. Add the secrets and variables it lists to a GitHub environment named after the stage.
+
+## Operations and recovery
+
+- **Logs:** both Workers have Workers Logs on; `npx alchemy logs --tail --stage prod` follows them. Look for `[jobs]`, `[cron]`, `[alert]` and `[ses-webhook]` lines.
+- **Stop everything:** deploy with `SENDING_ENABLED=false`. Both Workers stop sending at once; queued messages stay queued and go out after you turn it back on.
+- **Unconfirmed sends:** when SES doesn't answer a send (a timeout, a Worker that stopped mid-send), the message becomes `ambiguous` and is never resent automatically, because it may have gone out. An SES event for it later settles it. Never reset those messages to `queued` by hand.
+- **Jobs:** every job is written to D1 (`job_outbox`) before it's published, and the minute cron publishes anything left behind and restarts stalled sends. Jobs that fail 8 times land in the `JobsDeadLetters` queue; their work stays in D1 and the cron picks the campaign up again.
+- **Scheduled sends** start within about a minute of their time, subject to the queue backlog.
+- **Backups:** D1 Time Travel can restore the database to any minute of the last 30 days (`npx wrangler d1 time-travel restore <database> --timestamp <time>`). Mailcheap also writes a daily snapshot of every table to the private backups bucket (`backups/<date>/`). To restore one into a new, empty database created by the same migrations: download the folder, then `node scripts/backup-to-sql.mjs ./<date> > restore.sql` and `npx wrangler d1 execute <database> --remote --file restore.sql`. Turn sending off first.
+- **Rolling back code:** only to a version that works with the current schema. Migrations only add to the schema; never edit one that has been applied.
+- **Lost deployment state:** the state lives in your Cloudflare account, not on your machine. Keep the logical IDs in `alchemy.run.ts` unchanged, or Alchemy will create new resources instead of reusing the old ones.
 
 ## Local development
 
-```bash
-git clone https://github.com/<you>/mailcheap.git && cd mailcheap
-npm install
-cp .env.example .env.local   # set MONGODB_URI, ADMIN_EMAIL, ADMIN_PASSWORD, SESSION_SECRET
-npm run dev
-```
-
-A local MongoDB works: `docker run -d -p 27017:27017 mongo` and `MONGODB_URI=mongodb://127.0.0.1:27017/mailcheap`.
-
-- Sending stays off locally unless you set `SENDING_ENABLED=true`. When the SES keys are empty, the AWS SDK falls back to your default AWS credentials (`~/.aws`), so the domains page can show real data.
-- QStash can't reach `localhost`. To try a full send locally, run the QStash dev server (`npx @upstash/qstash-cli dev`) and use the URL, token and signing keys it prints.
-- `npm test` runs the unit tests and `npm run lint` runs ESLint.
+- `npm run dev` runs everything locally (see Setup step 3). Restarting keeps the local data in `.alchemy/local`; delete that folder for a fresh database.
+- Trigger the jobs Worker's cron by hand: open `/cdn-cgi/handler/scheduled?cron=*+*+*+*+*` on the jobs Worker's local URL.
+- When the SES keys are empty, sends fail: a Worker has no `~/.aws` credentials.
+- `npm test` runs the unit tests (D1 behavior runs against SQLite with the real migrations) and `npm run lint` runs ESLint. `npm run plan -- --stage staging` previews a deploy.
 
 ## Deliverability basics
 
@@ -189,24 +205,22 @@ A local MongoDB works: `docker run -d -p 27017:27017 mongo` and `MONGODB_URI=mon
 
 ## Environment variables
 
+Set them in `.env` (or the shell, or CI) before `npm run dev` or `npm run deploy`. Cloudflare bindings (`DB`, `ASSETS_BUCKET`, `BACKUPS_BUCKET`, `JOBS_QUEUE`, `RATE_LIMITER`, `SES_PACER`) and `APP_URL` are set by the stack.
+
 | Variable | Required | What it does |
 | --- | --- | --- |
-| `MONGODB_URI` | Yes | MongoDB connection string with a database name |
 | `ADMIN_EMAIL` | Yes | Dashboard login, and where test emails and alerts go |
 | `ADMIN_PASSWORD` | Yes | Dashboard password, 12+ characters. Changing it signs out every session. |
 | `SESSION_SECRET` | Yes | Signs sessions and email links. 32+ random characters. Changing it breaks links in sent emails. |
-| `APP_URL` | On other hosts | Public URL of the app. On Vercel it defaults to the production domain. |
+| `APP_DOMAIN` | Before real sends | Dashboard and email-link domain on your Cloudflare account. Empty: workers.dev URL. |
+| `ASSET_DOMAIN` | No | Domain for uploaded images on the R2 bucket. Empty: served by the app at `/media`. |
 | `SENDING_ENABLED` | To send | Nothing is sent unless it's `true` |
 | `SES_REGION` | To send | SES region, `us-east-1` by default |
 | `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY` | To send | IAM user keys |
 | `SES_CONFIGURATION_SET` | To send | Configuration set that publishes events to SNS |
 | `SES_SNS_TOPIC_ARN` | To send | SNS topic Mailcheap accepts at `/api/webhooks/ses` |
-| `QSTASH_TOKEN`, `QSTASH_CURRENT_SIGNING_KEY`, `QSTASH_NEXT_SIGNING_KEY` | To send campaigns | Background sending and scheduling |
-| `QSTASH_URL` | No | QStash region other than the default, or a local QStash dev server |
-| `SEND_RATE_PER_SECOND` | No | Emails per second, 1 to 14 (default 10). Use 6 on a free Atlas cluster. |
+| `SEND_RATE_PER_SECOND` | No | Emails per second across every send, 1 to 14 (default 10) |
 | `ARCHIVE_HOSTS` | No | Archive domains, like `news.example.com=weekly,letters.example.org=monthly` |
-| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | No | Shared rate limits |
-| `BLOB_READ_WRITE_TOKEN` | No | Image uploads in the editor (set by Vercel Blob) |
 | `ALERT_FROM` | No | From address for alert emails, on a verified domain |
 
 [`.env.example`](.env.example) has the same list with more detail.
@@ -235,12 +249,13 @@ curl -X POST https://<your-app>/api/v1/contacts \
 
 ## How it works
 
-- Next.js App Router, JavaScript, Tailwind CSS with shadcn/ui, MongoDB through Mongoose.
-- **Send** picks the audience (active contacts, suppressions left out, most engaged first), creates one message per reader, and queues one QStash job per batch of 50. Each job sends through the SES v2 API at `SEND_RATE_PER_SECOND` and pauses the campaign if bounce or complaint rates pass the limits.
-- Welcome and confirmation emails go out right away, capped at 100 every 10 minutes per newsletter.
-- SES publishes events to SNS, which posts them to `/api/webhooks/ses`. Mailcheap verifies the SNS signature, updates the message, the campaign stats and the contact, and suppresses bounced and complaining addresses for every newsletter.
+- Next.js App Router API on [vinext](https://vinext.dev), JavaScript, Tailwind CSS with shadcn/ui, Cloudflare D1 through plain parameterized SQL (`lib/db.js`, schema in `migrations/`).
+- **Send** picks the audience in bounded pages (active contacts, suppressions left out, most engaged first), creates one message per reader, and commits one job per batch of 50 to D1 together with the status change. The jobs Worker consumes them from a Cloudflare Queue, claims each message before calling the SES v2 API, paces every send through one Durable Object per SES region at `SEND_RATE_PER_SECOND`, and pauses the campaign if bounce or complaint rates pass the limits.
+- Welcome and confirmation emails go out right away, through the same pacing, capped at 100 every 10 minutes per newsletter.
+- A minute cron starts due scheduled campaigns, publishes jobs left in D1, marks abandoned sends as unconfirmed and restarts stalled campaigns.
+- SES publishes events to SNS, which posts them to `/api/webhooks/ses`. Mailcheap verifies the SNS signature, stores the event in D1, answers, and the jobs Worker applies it: the message, the campaign stats and the contact (counted once by SQL triggers), and suppression of bounced and complaining addresses for every newsletter.
 - Opens and clicks go through `/o/...` and `/c/...` on your app's domain. Clicks within 30 seconds of the send, or from known link scanners, don't count.
-- Archive pages are static and refresh when you send or save.
+- Archive pages are cached (Alchemy provisions the KV cache) and refresh when you send or save.
 
 ## Support
 

@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Suspense } from "react";
 import Link from "next/link";
-import { Types, isValidObjectId } from "mongoose";
+import { isObjectIdString as isValidObjectId } from "@/lib/validation";
 import { ChevronLeft, ChevronRight, Users } from "lucide-react";
 import AvatarContact from "@/components/AvatarContact";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
@@ -22,12 +22,12 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
-import { connectDb } from "@/lib/db";
+import { getAll } from "@/lib/db";
+import { listNewsletters } from "@/lib/newsletter-data";
 import { formatDate, formatNumber } from "@/lib/format";
-import { NEWSLETTER_SUMMARY_FIELDS, toNewsletterMap, toNewsletterOptions } from "@/lib/newsletters";
+import { toNewsletterMap, toNewsletterOptions } from "@/lib/newsletters";
 import { cn } from "@/lib/utils";
-import Contact, { CONTACT_STATUSES } from "@/models/Contact";
-import Newsletter from "@/models/Newsletter";
+import { CONTACT_STATUSES } from "@/lib/statuses";
 
 export const metadata = { title: "Contacts" };
 
@@ -35,32 +35,27 @@ const PAGE_SIZE = 50;
 
 export default async function ContactsPage({ searchParams }) {
 	const params = await searchParams;
-	const newsletterId = isValidObjectId(params.newsletter) ? params.newsletter : null;
+	const newsletterId = isValidObjectId(params.newsletter) ? params.newsletter.toLowerCase() : null;
 	const status = CONTACT_STATUSES.includes(params.status) ? params.status : null;
 	const query = typeof params.q === "string" ? params.q.trim().toLowerCase().slice(0, 254) : "";
 	const page = Math.max(1, Number.parseInt(params.page, 10) || 1);
 
-	await connectDb();
-	const newsletters = await Newsletter.find().sort({ createdAt: 1 }).select(NEWSLETTER_SUMMARY_FIELDS).lean();
+	const newsletters = await listNewsletters();
 	const newsletterOptions = toNewsletterOptions(newsletters);
 	const newsletterMap = toNewsletterMap(newsletters);
 
-	const baseFilter = {
-		...(newsletterId && { newsletterId: new Types.ObjectId(newsletterId) }),
-		...(query && { email: { $regex: `^${escapeRegex(query)}` } }),
-	};
-	const filter = { ...baseFilter, ...(status && { status }) };
-
-	// One count per status reads only the status indexes; grouping the contacts would read every one.
-	const [statusCounts, contacts] = await Promise.all([
-		Promise.all(CONTACT_STATUSES.map((key) => Contact.countDocuments({ ...baseFilter, status: key }))),
-		Contact.find(filter)
-			.sort({ subscribedAt: -1, _id: -1 })
-			.skip((page - 1) * PAGE_SIZE)
-			.limit(PAGE_SIZE)
-			.lean(),
+	const clauses = [];
+	const bindings = [];
+	if (newsletterId) { clauses.push("newsletterId = ?"); bindings.push(newsletterId); }
+	if (query) { clauses.push("email >= ? AND email < ?"); bindings.push(query, `${query}\uffff`); }
+	const where = clauses.length ? clauses.join(" AND ") : "1 = 1";
+	const [rows, contacts] = await Promise.all([
+		getAll(`SELECT status, count(*) AS count FROM contacts WHERE ${where} GROUP BY status`, bindings),
+		getAll(`SELECT * FROM contacts WHERE ${where}${status ? " AND status = ?" : ""}
+			ORDER BY subscribedAt DESC, _id DESC LIMIT ? OFFSET ?`, [...bindings, ...(status ? [status] : []), PAGE_SIZE, (page - 1) * PAGE_SIZE]),
 	]);
-	const counts = Object.fromEntries(CONTACT_STATUSES.map((key, index) => [key, statusCounts[index]]));
+	const counts = Object.fromEntries(CONTACT_STATUSES.map((key) => [key, rows.find((row) => row.status === key)?.count ?? 0]));
+	const statusCounts = Object.values(counts);
 	const totalAll = statusCounts.reduce((sum, count) => sum + count, 0);
 	const total = status ? counts[status] || 0 : totalAll;
 	const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -139,7 +134,7 @@ export default async function ContactsPage({ searchParams }) {
 											<span className="flex min-w-0 items-center gap-2.5">
 												<AvatarContact
 													email={contact.email}
-													gravatarHash={gravatarHash(contact.email)}
+													colorHash={contactColorHash(contact.email)}
 													size={26}
 												/>
 												<span className="truncate">{contact.email}</span>
@@ -213,12 +208,8 @@ function PageLink({ href, isDisabled, label, children }) {
 	);
 }
 
-function gravatarHash(email) {
+function contactColorHash(email) {
 	return crypto.createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
-}
-
-function escapeRegex(value) {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function engagement(contact, statKey, importedKey) {

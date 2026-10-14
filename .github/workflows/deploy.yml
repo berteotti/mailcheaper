@@ -1,0 +1,44 @@
+name: Deploy
+
+# The same command as a local deploy. Run it by hand for a stage; prod also needs the production
+# environment's approval if you configure one in the repository settings.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Stage to deploy (staging or prod)
+        required: true
+        default: staging
+
+concurrency: deploy-${{ inputs.stage }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.stage }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run deploy -- --stage ${{ inputs.stage }} --no-input
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+          ASSET_DOMAIN: ${{ vars.ASSET_DOMAIN }}
+          ARCHIVE_HOSTS: ${{ vars.ARCHIVE_HOSTS }}
+          SENDING_ENABLED: ${{ vars.SENDING_ENABLED }}
+          SES_REGION: ${{ vars.SES_REGION }}
+          SES_ACCESS_KEY_ID: ${{ secrets.SES_ACCESS_KEY_ID }}
+          SES_SECRET_ACCESS_KEY: ${{ secrets.SES_SECRET_ACCESS_KEY }}
+          SES_CONFIGURATION_SET: ${{ vars.SES_CONFIGURATION_SET }}
+          SES_SNS_TOPIC_ARN: ${{ vars.SES_SNS_TOPIC_ARN }}
+          SEND_RATE_PER_SECOND: ${{ vars.SEND_RATE_PER_SECOND }}
+          ALERT_FROM: ${{ vars.ALERT_FROM }}

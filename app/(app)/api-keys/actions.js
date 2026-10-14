@@ -1,13 +1,12 @@
 "use server";
 
-import { isValidObjectId } from "mongoose";
+import { isObjectIdString as isValidObjectId } from "@/lib/validation";
 import { revalidatePath } from "next/cache";
-import { notifyActivity } from "@/lib/alerts";
+import { notifyActivity } from "@/lib/activity-notice";
 import { generateApiKey } from "@/lib/api-keys";
 import { requireSession } from "@/lib/auth";
 import { getAppUrl } from "@/lib/config";
-import { connectDb } from "@/lib/db";
-import ApiKey from "@/models/ApiKey";
+import { execute, newId } from "@/lib/db";
 
 export async function createApiKey(_state, formData) {
 	await requireSession();
@@ -16,9 +15,10 @@ export async function createApiKey(_state, formData) {
 		.slice(0, 60);
 	if (!name) return { error: "Name is required" };
 
-	await connectDb();
 	const { key, prefix, hash } = generateApiKey();
-	await ApiKey.create({ name, prefix, hash });
+	const now = Date.now();
+	await execute("INSERT INTO api_keys (_id, name, prefix, hash, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)",
+		[newId(), name, prefix, hash, now, now]);
 	await notifyActivity([`API key created: ${name}`, `${getAppUrl()}/api-keys`]);
 
 	revalidatePath("/api-keys");
@@ -29,8 +29,8 @@ export async function revokeApiKey(id) {
 	await requireSession();
 	if (!isValidObjectId(id)) return { error: "Key not found" };
 
-	await connectDb();
-	await ApiKey.updateOne({ _id: id, revokedAt: null }, { $set: { revokedAt: new Date() } });
+	const now = Date.now();
+	await execute("UPDATE api_keys SET revokedAt = ?, updatedAt = ? WHERE _id = lower(?) AND revokedAt IS NULL", [now, now, id]);
 
 	revalidatePath("/api-keys");
 	return { ok: true };

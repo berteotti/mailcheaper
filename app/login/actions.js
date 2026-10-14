@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { notifyActivity } from "@/lib/alerts";
+import { notifyActivity } from "@/lib/activity-notice";
 import { isValidLogin, startSession } from "@/lib/auth";
 import { getConfigProblems } from "@/lib/config";
 import { getClientIp, isRateLimited } from "@/lib/rate-limit";

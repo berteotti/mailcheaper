@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { handleSesEvent } from "@/lib/ses-events";
+import { commitJobs } from "@/lib/jobs";
+import { getSesEventType } from "@/lib/ses-event-mapping";
 import { isValidSubscribeUrl, verifySnsMessage } from "@/lib/sns";
 import { isPlainObject } from "@/lib/validation";
 
@@ -30,17 +31,25 @@ async function confirmSubscription(message) {
 	return reply(200, { ok: true });
 }
 
+// Raw headers are dropped before storing; the jobs Worker applies the event (lib/ses-events.js).
+function withoutMailHeaders(sesEvent) {
+	if (!isPlainObject(sesEvent.mail)) return sesEvent;
+	const { headers: _headers, ...mail } = sesEvent.mail;
+	return { ...sesEvent, mail };
+}
+
 async function handleNotification(message) {
 	const sesEvent = parseJson(message.Message);
-	if (!isPlainObject(sesEvent)) return reply(200, { ok: true, ignored: true });
+	if (!isPlainObject(sesEvent) || !getSesEventType(sesEvent)) return reply(200, { ok: true, ignored: true });
 
 	try {
-		const { handled } = await handleSesEvent(sesEvent);
-		return reply(200, { ok: true, ...(!handled && { ignored: true }) });
+		// Acknowledged only once the event is durable in D1. The SNS MessageId keeps redeliveries to one job.
+		await commitJobs([{ id: `ses:${message.MessageId}`, kind: "ses-event", payload: withoutMailHeaders(sesEvent) }]);
+		return reply(200, { ok: true });
 	} catch (error) {
-		// A 5xx makes SNS retry; the handler is safe to replay.
-		console.error("[ses-webhook] Could not handle the event:", error);
-		return reply(500, { error: "Could not handle the event" });
+		// A 5xx makes SNS retry; the job is keyed by its message id.
+		console.error("[ses-webhook] Could not store the event:", error);
+		return reply(500, { error: "Could not store the event" });
 	}
 }
 

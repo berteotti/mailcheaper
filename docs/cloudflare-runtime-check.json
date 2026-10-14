@@ -1,0 +1,206 @@
+{
+  "tool": "vinext",
+  "version": "1.2.0",
+  "scope": "static scan only",
+  "imports": [
+    {
+      "name": "next/headers",
+      "status": "supported",
+      "files": [
+        "app/(app)/(overview)/page.js",
+        "app/archive/actions.js",
+        "app/keep/actions.js",
+        "app/login/actions.js",
+        "lib/alerts.js",
+        "lib/auth.js"
+      ]
+    },
+    {
+      "name": "next/link",
+      "status": "supported",
+      "files": [
+        "app/(app)/(overview)/page.js",
+        "app/(app)/contacts/page.js",
+        "app/(app)/layout.js",
+        "app/(app)/newsletters/(list)/page.js",
+        "components/ButtonNewCampaign.jsx",
+        "components/HeaderPage.jsx",
+        "components/MenuCampaign.jsx",
+        "components/NavLinks.jsx",
+        "components/NavMobile.jsx",
+        "components/TableCampaigns.jsx",
+        "components/TabsNewsletter.jsx"
+      ]
+    },
+    {
+      "name": "next/navigation",
+      "status": "supported",
+      "files": [
+        "app/(app)/actions.js",
+        "app/(app)/campaigns/[id]/page.js",
+        "app/(app)/campaigns/actions.js",
+        "app/(app)/newsletters/[id]/page.js",
+        "app/(app)/newsletters/actions.js",
+        "app/archive/[slug]/authors/[author]/page.js",
+        "app/archive/[slug]/layout.js",
+        "app/archive/[slug]/p/[post]/page.js",
+        "app/archive/[slug]/page.js",
+        "app/login/actions.js",
+        "app/login/page.js",
+        "components/CookieTimezone.jsx",
+        "components/DialogDiscardCampaign.jsx",
+        "components/DialogImportContacts.jsx",
+        "components/DialogScheduleCampaign.jsx",
+        "components/DialogSendCampaign.jsx",
+        "components/DialogSendMore.jsx",
+        "components/FilterContacts.jsx",
+        "components/NavLinks.jsx",
+        "lib/auth.js"
+      ]
+    },
+    {
+      "name": "next/cache",
+      "status": "supported",
+      "detail": "revalidateTag, revalidatePath, updateTag, refresh, unstable_cache, unstable_noStore, io, cacheLife, cacheTag",
+      "files": [
+        "app/(app)/api-keys/actions.js",
+        "app/(app)/campaigns/actions.js",
+        "app/(app)/contacts/actions.js",
+        "app/(app)/newsletters/actions.js",
+        "lib/archive-data.js",
+        "lib/scheduling.js"
+      ]
+    },
+    {
+      "name": "next/server",
+      "status": "supported",
+      "detail": "NextRequest, NextResponse, NextFetchEvent, userAgent, userAgentFromString, after, connection",
+      "files": [
+        "app/api/jobs/send-batch/route.js",
+        "app/api/jobs/send-scheduled/route.js",
+        "app/api/unsubscribe/route.js",
+        "app/api/v1/campaigns/route.js",
+        "app/api/v1/contacts/route.js",
+        "app/api/webhooks/ses/route.js",
+        "app/archive/actions.js",
+        "app/c/[token]/route.js",
+        "app/confirm/actions.js",
+        "app/o/[token]/route.js",
+        "lib/alerts.js",
+        "lib/qstash-route.js",
+        "proxy.js"
+      ]
+    },
+    {
+      "name": "next/og",
+      "status": "supported",
+      "detail": "ImageResponse via @vercel/og",
+      "files": [
+        "app/archive/[slug]/og/route.js"
+      ]
+    },
+    {
+      "name": "next/font/google",
+      "status": "supported",
+      "detail": "self-hosted with fallback metrics; falls back to the Google Fonts CDN when font options aren't statically analyzable or the network fetch fails",
+      "files": [
+        "app/layout.js"
+      ]
+    },
+    {
+      "name": "next/image",
+      "status": "supported",
+      "detail": "local images served via /_next/image (resized when an images optimizer is configured); remote images with width and height via @unpic/react, other remote images (fill or dimensionless) as a plain <img>",
+      "files": [
+        "components/AvatarContact.jsx",
+        "components/AvatarNewsletter.jsx",
+        "components/CardIssue.jsx",
+        "components/ImageDomainLogo.jsx",
+        "components/ImageFavicon.jsx",
+        "components/ThumbnailCampaign.jsx"
+      ]
+    },
+    {
+      "name": "server-only",
+      "status": "supported",
+      "files": [
+        "lib/alerts.js",
+        "lib/api-keys.js",
+        "lib/archive-data.js",
+        "lib/archive-slugs.js",
+        "lib/auth.js",
+        "lib/blob.js",
+        "lib/overview-data.js",
+        "lib/qstash-route.js",
+        "lib/scheduling.js",
+        "lib/sending.js",
+        "lib/ses-events.js",
+        "lib/ses.js"
+      ]
+    }
+  ],
+  "config": [
+    {
+      "name": "images",
+      "status": "partial",
+      "detail": "remotePatterns, deviceSizes/imageSizes, qualities and SVG/CSP options honoured; resizing needs an optimizer via vinext({ images: { optimizer } }), images are served as-is otherwise; loader/loaderFile are ignored"
+    },
+    {
+      "name": "headers",
+      "status": "supported"
+    },
+    {
+      "name": "poweredByHeader",
+      "status": "supported",
+      "detail": "vinext never sends an X-Powered-By header"
+    }
+  ],
+  "libraries": [
+    {
+      "name": "next-themes",
+      "status": "supported"
+    },
+    {
+      "name": "tailwindcss",
+      "status": "supported"
+    },
+    {
+      "name": "lucide-react",
+      "status": "supported"
+    }
+  ],
+  "conventions": [
+    {
+      "name": "App Router (app/)",
+      "status": "supported"
+    },
+    {
+      "name": "15 page(s)",
+      "status": "supported"
+    },
+    {
+      "name": "3 layout(s)",
+      "status": "supported"
+    },
+    {
+      "name": "14 route handler(s)",
+      "status": "supported"
+    },
+    {
+      "name": "5 loading boundary(ies)",
+      "status": "supported"
+    },
+    {
+      "name": "proxy.js (Next.js 16)",
+      "status": "supported"
+    }
+  ],
+  "hasAppDir": true,
+  "summary": {
+    "supported": 20,
+    "partial": 1,
+    "unsupported": 0,
+    "total": 21,
+    "score": 98
+  }
+}

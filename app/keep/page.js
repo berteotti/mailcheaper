@@ -2,9 +2,8 @@ import { Link2Off } from "lucide-react";
 import CardNotice from "@/components/CardNotice";
 import FormKeep from "@/components/FormKeep";
 import { getArchiveUrls } from "@/lib/archive-hosts";
-import { connectDb } from "@/lib/db";
 import { verifyKeepToken } from "@/lib/last-chance";
-import Newsletter from "@/models/Newsletter";
+import { findNewsletter } from "@/lib/newsletter-data";
 
 // The URL carries the keep token: keep it out of search results and referrer headers.
 export const metadata = {
@@ -38,10 +37,7 @@ export default async function KeepPage({ searchParams }) {
 
 async function getNewsletter(newsletterId) {
 	try {
-		await connectDb();
-		return await Newsletter.findById(newsletterId)
-			.select({ name: 1, slug: 1, archiveEnabled: 1 })
-			.lean();
+		return await findNewsletter(newsletterId);
 	} catch (error) {
 		console.error("[keep] Could not load the newsletter:", error.message);
 		return null;

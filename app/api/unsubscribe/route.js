@@ -1,53 +1,11 @@
 import { NextResponse } from "next/server";
-import { connectDb } from "@/lib/db";
+import { unsubscribeContact } from "@/lib/contacts";
 import { getClientIp, isRateLimited } from "@/lib/rate-limit";
 import { verifyUnsubscribeToken } from "@/lib/unsubscribe";
-import Campaign from "@/models/Campaign";
-import Contact from "@/models/Contact";
-import Message from "@/models/Message";
 
 const NO_STORE = { "Cache-Control": "no-store" };
-// Bounced and complained contacts stay as they are: those statuses also block sending.
-const SUBSCRIBED_STATUSES = ["active", "dormant"];
-const RECENT_CAMPAIGNS = 5;
 // Gmail and Yahoo send one-click requests from shared mail servers, so keep this generous.
 const RATE_LIMIT = { name: "unsubscribe", limit: 60, window: "1 m" };
-
-// Links don't carry the campaign, so the unsubscribe counts for the latest campaign sent to them.
-async function creditLatestCampaign({ contactId, newsletterId }) {
-	const campaigns = await Campaign.find({ newsletterId, startedAt: { $ne: null } })
-		.sort({ startedAt: -1 })
-		.limit(RECENT_CAMPAIGNS)
-		.select({ _id: 1 })
-		.lean();
-	for (const { _id } of campaigns) {
-		const wasSent = await Message.exists({
-			kind: "campaign",
-			campaignId: _id,
-			contactId,
-			sentAt: { $ne: null },
-		});
-		if (!wasSent) continue;
-		await Campaign.updateOne({ _id }, { $inc: { "stats.unsubscribed": 1 } });
-		return;
-	}
-}
-
-async function unsubscribe({ contactId, newsletterId }) {
-	await connectDb();
-	const previous = await Contact.findOneAndUpdate(
-		{ _id: contactId, newsletterId, status: { $in: SUBSCRIBED_STATUSES } },
-		{ $set: { status: "unsubscribed", unsubscribedAt: new Date() } }
-	)
-		.select({ _id: 1 })
-		.lean();
-	if (!previous) return;
-
-	console.log(`[unsubscribe] Contact ${contactId} unsubscribed from newsletter ${newsletterId}`);
-	await creditLatestCampaign({ contactId, newsletterId }).catch((error) =>
-		console.error("[unsubscribe] Could not credit the campaign:", error.message)
-	);
-}
 
 function redirectToPage(request, params) {
 	const url = new URL("/unsubscribe", request.url);
@@ -84,7 +42,7 @@ export async function POST(request) {
 	if (!reference) return respond(400, "invalid");
 
 	try {
-		await unsubscribe(reference);
+		await unsubscribeContact(reference);
 		return respond(200, "done");
 	} catch (error) {
 		console.error("[unsubscribe] Failed:", error);

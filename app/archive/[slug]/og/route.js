@@ -1,30 +1,35 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ImageResponse } from "next/og";
+import geistRegularUrl from "@/assets/fonts/Geist-Regular.ttf?inline";
+import geistSemiBoldUrl from "@/assets/fonts/Geist-SemiBold.ttf?inline";
 import { countReaders, getArchiveIssue, getArchiveNewsletter } from "@/lib/archive-data";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { getIssueDate } from "@/lib/archive-issues";
 import { SHARE_IMAGE_SIZE } from "@/lib/archive-seo";
 import { getAppUrl } from "@/lib/config";
+import { getBindings } from "@/lib/db";
 import { formatDate, formatNumber } from "@/lib/format";
 
-const [geistRegular, geistSemiBold] = await Promise.all([
-	readFile(join(process.cwd(), "assets/fonts/Geist-Regular.ttf")),
-	readFile(join(process.cwd(), "assets/fonts/Geist-SemiBold.ttf")),
-]);
+// Bundled into the Worker as data URLs: a deployed Worker has no project checkout to read files from.
+const fromDataUrl = (url) => Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
+const [geistRegular, geistSemiBold] = [fromDataUrl(geistRegularUrl), fromDataUrl(geistSemiBoldUrl)];
 const FONTS = [
 	{ name: "Geist", data: geistRegular, weight: 400, style: "normal" },
 	{ name: "Geist", data: geistSemiBold, weight: 600, style: "normal" },
 ];
 const COLORS = { foreground: "#0a0a0a", muted: "#737373", border: "#e5e5e5" };
 
+// Local paths are files in public/, read through the Worker's static assets binding.
 async function loadImage(url) {
-	const buffer = url.startsWith("/")
-		? await readFile(join(process.cwd(), "public", url)).catch(() => null)
-		: await fetch(url, { signal: AbortSignal.timeout(5000) })
-				.then((response) => (response.ok ? response.arrayBuffer() : null))
-				.then((data) => data && Buffer.from(data))
-				.catch(() => null);
+	const { ASSETS } = await getBindings();
+	const isLocal = url.startsWith("/") && !url.startsWith("//");
+	if (isLocal && !ASSETS) return null;
+	const response = isLocal
+		? ASSETS.fetch(new URL(url, "https://assets.local"))
+		: fetch(url, { signal: AbortSignal.timeout(5000) });
+	const buffer = await response
+		.then((result) => (result.ok ? result.arrayBuffer() : null))
+		.then((data) => data && Buffer.from(data))
+		.catch(() => null);
 	if (!buffer) return null;
 	const type = buffer[0] === 0x89 && buffer[1] === 0x50 ? "png" : buffer[0] === 0xff && buffer[1] === 0xd8 ? "jpeg" : null;
 	return type && `data:image/${type};base64,${buffer.toString("base64")}`;

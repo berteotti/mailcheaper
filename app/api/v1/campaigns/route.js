@@ -4,13 +4,12 @@ import { listPublishedIssues } from "@/lib/archive-data";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { uniqueArchiveSlug } from "@/lib/archive-slugs";
 import { getAppUrl } from "@/lib/config";
-import { connectDb } from "@/lib/db";
 import { isRateLimited } from "@/lib/rate-limit";
 import { ARCHIVE_SLUG_PATTERN } from "@/lib/slug";
 import { firstImageUrl } from "@/lib/thumbnail";
 import { MAX_BODY_BYTES, isPlainObject } from "@/lib/validation";
-import Campaign from "@/models/Campaign";
-import Newsletter from "@/models/Newsletter";
+import { createCampaignRecord } from "@/lib/campaign-queries";
+import { findNewsletterBySlug } from "@/lib/newsletter-data";
 
 const MAX_SUBJECT_LENGTH = 200;
 const MAX_PREVIEW_TEXT_LENGTH = 300;
@@ -74,8 +73,7 @@ export async function GET(request) {
 	const slug = new URL(request.url).searchParams.get("newsletter")?.trim().toLowerCase();
 	if (!slug) return fail(400, "newsletter is required");
 
-	await connectDb();
-	const newsletter = await Newsletter.findOne({ slug }).select({ _id: 1, slug: 1, archiveEnabled: 1 }).lean();
+	const newsletter = await findNewsletterBySlug(slug);
 	if (!newsletter) return fail(404, "Newsletter not found");
 
 	const issues = await listPublishedIssues(newsletter._id);
@@ -100,11 +98,10 @@ export async function POST(request) {
 	const input = readInput(await request.json().catch(() => null));
 	if (input.error) return fail(400, input.error);
 
-	await connectDb();
-	const newsletter = await Newsletter.findOne({ slug: input.slug }).select({ _id: 1 }).lean();
+	const newsletter = await findNewsletterBySlug(input.slug);
 	if (!newsletter) return fail(404, "Newsletter not found");
 
-	const campaign = await Campaign.create({
+	const campaign = await createCampaignRecord({
 		newsletterId: newsletter._id,
 		subject: input.subject,
 		previewText: input.previewText,

@@ -1,15 +1,13 @@
-import { Types, isValidObjectId } from "mongoose";
+import { isObjectIdString as isValidObjectId } from "@/lib/validation";
 import { notFound } from "next/navigation";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
 import FormNewsletter from "@/components/FormNewsletter";
 import HeaderPage from "@/components/HeaderPage";
-import { cleanupTotalsPipeline } from "@/lib/cleanup";
 import { isSendingEnabled } from "@/lib/config";
-import { connectDb } from "@/lib/db";
+import { getOne } from "@/lib/db";
+import { findNewsletter } from "@/lib/newsletter-data";
 import { serialize } from "@/lib/serialize";
 import { listSesDomains } from "@/lib/ses";
-import Contact from "@/models/Contact";
-import Newsletter from "@/models/Newsletter";
 
 export const metadata = { title: "Newsletter" };
 
@@ -18,9 +16,8 @@ export default async function NewsletterPage({ params }) {
 	const isNew = id === "new";
 	if (!isNew && !isValidObjectId(id)) notFound();
 
-	await connectDb();
 	const [newsletter, domains, cleanupTotals] = await Promise.all([
-		isNew ? null : Newsletter.findById(id).lean(),
+		isNew ? null : findNewsletter(id),
 		listSesDomains(),
 		isNew ? null : getCleanupTotals(id),
 	]);
@@ -49,6 +46,10 @@ export default async function NewsletterPage({ params }) {
 }
 
 async function getCleanupTotals(newsletterId) {
-	const [totals] = await Contact.aggregate(cleanupTotalsPipeline(new Types.ObjectId(newsletterId)));
+	const totals = await getOne(`SELECT
+		sum(status = 'active' AND lastChanceAt >= max(coalesce(lastEngagedAt, 0), coalesce(lastOpenAt, 0), coalesce(lastClickAt, 0), coalesce(confirmedAt, 0), subscribedAt)) AS waiting,
+		sum(status = 'active' AND lastChanceAt < max(coalesce(lastEngagedAt, 0), coalesce(lastOpenAt, 0), coalesce(lastClickAt, 0), coalesce(confirmedAt, 0), subscribedAt)) AS kept,
+		sum(status = 'dormant') AS dormant
+		FROM contacts WHERE newsletterId = lower(?) AND lastChanceAt IS NOT NULL`, [newsletterId]);
 	return { waiting: totals?.waiting ?? 0, kept: totals?.kept ?? 0, dormant: totals?.dormant ?? 0 };
 }

@@ -1,18 +1,15 @@
-import { isValidObjectId } from "mongoose";
+import { isObjectIdString as isValidObjectId } from "@/lib/validation";
 import { notFound } from "next/navigation";
 import CampaignReport from "@/components/CampaignReport";
 import FormCampaign from "@/components/FormCampaign";
 import { getArchiveUrls } from "@/lib/archive-hosts";
-import { sendTimesPipeline } from "@/lib/campaign-queries";
+import { findCampaign, listSendTimes } from "@/lib/campaign-queries";
 import { isSendingEnabled } from "@/lib/config";
-import { connectDb } from "@/lib/db";
-import { MESSAGE_STATS_GROUP } from "@/lib/message-stats";
+import { getAll, getOne } from "@/lib/db";
+import { MESSAGE_STATS_SQL } from "@/lib/message-stats";
+import { findNewsletter } from "@/lib/newsletter-data";
 import { serialize } from "@/lib/serialize";
 import { listSesDomains } from "@/lib/ses";
-import Campaign from "@/models/Campaign";
-import Contact from "@/models/Contact";
-import Message from "@/models/Message";
-import Newsletter from "@/models/Newsletter";
 
 export const metadata = { title: "Campaign" };
 
@@ -20,10 +17,9 @@ export default async function CampaignPage({ params }) {
 	const { id } = await params;
 	if (!isValidObjectId(id)) notFound();
 
-	await connectDb();
-	const campaign = await Campaign.findById(id).lean();
+	const campaign = await findCampaign(id);
 	if (!campaign) notFound();
-	const newsletter = await Newsletter.findById(campaign.newsletterId).lean();
+	const newsletter = await findNewsletter(campaign.newsletterId);
 	if (!newsletter) notFound();
 
 	if (!["draft", "scheduled"].includes(campaign.status)) {
@@ -42,7 +38,7 @@ export default async function CampaignPage({ params }) {
 	}
 
 	const [audienceCount, domains, sendTimes] = await Promise.all([
-		Contact.countDocuments({ newsletterId: newsletter._id, status: "active" }),
+		getOne("SELECT count(*) AS count FROM contacts WHERE newsletterId = ? AND status = 'active'", [newsletter._id]).then((row) => row.count),
 		listSesDomains(),
 		getSendTimes(campaign),
 	]);
@@ -66,10 +62,8 @@ export default async function CampaignPage({ params }) {
 
 // A newsletter's first issue borrows the times the other newsletters go out.
 async function getSendTimes(campaign) {
-	const own = await Campaign.aggregate(
-		sendTimesPipeline({ newsletterId: campaign.newsletterId, excludeId: campaign._id })
-	);
-	const rows = own.length > 0 ? own : await Campaign.aggregate(sendTimesPipeline({ excludeId: campaign._id }));
+	const own = await listSendTimes({ newsletterId: campaign.newsletterId, excludeId: campaign._id });
+	const rows = own.length > 0 ? own : await listSendTimes({ excludeId: campaign._id });
 	return {
 		history: rows.map(({ at }) => at.toISOString()),
 		taken: own.filter(({ status }) => status === "scheduled").map(({ at }) => at.toISOString()),
@@ -80,16 +74,13 @@ async function getSendTimes(campaign) {
 // left after receiving it make this a little low, and the send itself skips everyone who has it.
 async function countRemaining(campaign) {
 	if (campaign.status !== "sent" || !campaign.audienceLimit) return 0;
-	const active = await Contact.countDocuments({ newsletterId: campaign.newsletterId, status: "active" });
+	const { count: active } = await getOne("SELECT count(*) AS count FROM contacts WHERE newsletterId = ? AND status = 'active'", [campaign.newsletterId]);
 	const reached = (campaign.stats?.recipients ?? 0) + (campaign.lastChance?.recipients ?? 0);
 	return Math.max(0, active - reached);
 }
 
 async function getProviderBreakdown(campaignId) {
-	const rows = await Message.aggregate([
-		{ $match: { campaignId, kind: "campaign" } },
-		{ $group: { _id: { $ifNull: ["$provider", "other"] }, ...MESSAGE_STATS_GROUP } },
-		{ $sort: { sent: -1 } },
-	]);
-	return rows.filter(({ sent }) => sent > 0).map(({ _id, ...row }) => ({ provider: _id, ...row }));
+	return getAll(`SELECT coalesce(provider, 'other') AS provider, ${MESSAGE_STATS_SQL} FROM messages
+		WHERE campaignId = ? AND kind = 'campaign' GROUP BY coalesce(provider, 'other') HAVING sum(sentAt IS NOT NULL) > 0
+		ORDER BY sent DESC`, [campaignId]);
 }

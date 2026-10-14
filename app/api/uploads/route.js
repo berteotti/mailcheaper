@@ -1,9 +1,9 @@
 import { getSession } from "@/lib/auth";
-import { putImage } from "@/lib/blob";
+import { getAssetStore, putImage } from "@/lib/assets";
 import { MAX_UPLOAD_BYTES } from "@/lib/upload-image";
 import { slugify } from "@/lib/slug";
 
-// The declared type must match the file's first bytes, so nothing but pictures ends up on the CDN.
+// The declared type must match the file's first bytes, so nothing but pictures ends up on the asset domain.
 const IMAGE_TYPES = {
 	"image/png": { extension: "png", signature: "\x89PNG" },
 	"image/jpeg": { extension: "jpg", signature: "\xff\xd8\xff" },
@@ -13,8 +13,8 @@ const IMAGE_TYPES = {
 
 export async function POST(request) {
 	if (!(await getSession())) return Response.json({ error: "Unauthorized" }, { status: 401 });
-	if (!process.env.BLOB_READ_WRITE_TOKEN) {
-		return Response.json({ error: "Image uploads need a Vercel Blob store (BLOB_READ_WRITE_TOKEN)" }, { status: 503 });
+	if (!(await getAssetStore())) {
+		return Response.json({ error: "Image uploads need the R2 asset bucket (ASSETS_BUCKET)" }, { status: 503 });
 	}
 
 	const contentType = request.headers.get("content-type");

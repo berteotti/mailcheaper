@@ -1,6 +1,6 @@
 "use server";
 
-import { isValidObjectId } from "mongoose";
+import { isObjectIdString as isValidObjectId } from "@/lib/validation";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { revalidateArchive } from "@/lib/archive-data";
@@ -8,11 +8,11 @@ import { requireSession } from "@/lib/auth";
 import { CLEANUP_LIMITS } from "@/lib/cleanup";
 import { isSendingEnabled } from "@/lib/config";
 import { getConfirmationProblem } from "@/lib/confirmation-content";
-import { connectDb } from "@/lib/db";
+import { isUniqueConstraint } from "@/lib/db";
+import { saveNewsletterRecord } from "@/lib/newsletter-data";
 import { MAX_AUTHOR_BIO_LENGTH, MAX_DESCRIPTION_LENGTH } from "@/lib/newsletters";
 import { sendWelcomeTestEmail } from "@/lib/sending";
 import { parseSocialLinks } from "@/lib/social";
-import Newsletter from "@/models/Newsletter";
 
 const SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -126,13 +126,12 @@ export async function saveNewsletter(_state, formData) {
 		...(formData.has("confirmationSubject") && { confirmation }),
 	};
 
-	await connectDb();
 	let createdId;
 	try {
-		if (id) await Newsletter.updateOne({ _id: id }, { $set: document }, { runValidators: true });
-		else createdId = (await Newsletter.create(document))._id.toString();
+		const savedId = await saveNewsletterRecord(id, document);
+		if (!id) createdId = savedId;
 	} catch (error) {
-		if (error?.code === 11000) return { error: "This slug is already used" };
+		if (isUniqueConstraint(error)) return { error: "This slug is already used" };
 		throw error;
 	}
 

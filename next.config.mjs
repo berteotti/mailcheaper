@@ -8,7 +8,7 @@ const CONTENT_SECURITY_POLICY = [
 	"script-src-attr 'none'",
 ].join("; ");
 
-const SECURITY_HEADERS = [
+export const SECURITY_HEADERS = [
 	{ key: "Content-Security-Policy", value: CONTENT_SECURITY_POLICY },
 	{ key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains" },
 	{ key: "X-Frame-Options", value: "DENY" },
@@ -19,9 +19,6 @@ const SECURITY_HEADERS = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
 	poweredByHeader: false,
-	images: {
-		remotePatterns: [{ protocol: "https", hostname: "*.public.blob.vercel-storage.com" }],
-	},
 	async headers() {
 		return [{ source: "/:path*", headers: SECURITY_HEADERS }];
 	},

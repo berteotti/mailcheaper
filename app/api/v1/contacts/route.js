@@ -3,12 +3,11 @@ import { sendAlert } from "@/lib/alerts";
 import { authenticateRequest } from "@/lib/api-keys";
 import { isSendingEnabled } from "@/lib/config";
 import { upsertContact } from "@/lib/contacts";
-import { connectDb } from "@/lib/db";
 import { getInbox } from "@/lib/inbox-links";
 import { isRateLimited } from "@/lib/rate-limit";
 import { queueConfirmationEmail, queueWelcomeEmail } from "@/lib/sending";
 import { isPlainObject, normalizeEmail } from "@/lib/validation";
-import Newsletter from "@/models/Newsletter";
+import { findNewsletterBySlug } from "@/lib/newsletter-data";
 
 const MAX_SOURCE_LENGTH = 100;
 // Each signup can send a welcome email, so a leaked key or a form without its own limit must not be
@@ -64,8 +63,7 @@ export async function POST(request) {
 		return fail(429, "Too many signups from this visitor, try again later");
 	}
 
-	await connectDb();
-	const newsletter = await Newsletter.findOne({ slug: input.slug }).lean();
+	const newsletter = await findNewsletterBySlug(input.slug);
 	if (!newsletter) return fail(404, "Newsletter not found");
 
 	const { contact, created } = await upsertContact({

@@ -9,7 +9,6 @@ import {
 	getLastSignOfLife,
 	splitAudience,
 	summarizePreview,
-	withEngagement,
 } from "../lib/cleanup.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -84,15 +83,6 @@ test("after the last-chance email: skip while waiting, dormant at a send 14 or m
 	);
 });
 
-test("signs of life reset the count and move the date forward only", () => {
-	const at = new Date("2027-01-01T00:00:00Z");
-	assert.deepEqual(withEngagement(undefined, at), { $set: { ignoredIssues: 0 }, $max: { lastEngagedAt: at } });
-	assert.deepEqual(withEngagement({ $set: { status: "active" }, $max: { lastOpenAt: at }, $inc: { "stats.opens": 1 } }, at), {
-		$set: { status: "active", ignoredIssues: 0 },
-		$max: { lastOpenAt: at, lastEngagedAt: at },
-		$inc: { "stats.opens": 1 },
-	});
-});
 
 // Most engaged first, as the send walks them.
 const AUDIENCE = [
@@ -169,15 +159,3 @@ test("the send dialog's counts match what the send does, at any limit", () => {
 	assert.deepEqual(chunked, preview);
 });
 
-test("signing up again is a sign of life", () => {
-	const at = new Date(NOW);
-	assert.deepEqual(withEngagement(undefined, at), {
-		$set: { ignoredIssues: 0 },
-		$max: { lastEngagedAt: at },
-	});
-	assert.deepEqual(withEngagement({ $set: { status: "active", subscribedAt: at }, $unset: { unsubscribedAt: 1 } }, at), {
-		$set: { status: "active", subscribedAt: at, ignoredIssues: 0 },
-		$unset: { unsubscribedAt: 1 },
-		$max: { lastEngagedAt: at },
-	});
-});
