@@ -110,7 +110,7 @@ describe("/", () => {
 		assert.deepEqual(outcome(await visit("/")), landingPath ? { rewrite: landingPath } : { status: 307, location: "http://localhost:3000/signin" });
 
 		const user = await signIn("home@example.com");
-		assert.ok(cookieOf(user).includes("better-auth.session_token="));
+		assert.ok(cookieOf(user).includes("mailcheap.session_token="));
 		assert.deepEqual(outcome(await visit("/", { cookie: cookieOf(user) })), { next: true });
 	});
 

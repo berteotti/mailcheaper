@@ -1,7 +1,7 @@
 import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse } from "next/server";
 import { getArchiveHostUrl } from "@/lib/archive-hosts";
-import { isCloud } from "@/lib/config";
+import { AUTH_COOKIE_PREFIX, isCloud } from "@/lib/config";
 import { resolveArchiveHost } from "@/lib/host-routing";
 import { siteExtensions } from "@/lib/site-extensions";
 
@@ -87,7 +87,7 @@ export async function proxy(request) {
 	}
 
 	// Only whether a session cookie is there: pages, actions and routes check the session itself.
-	const hasSession = Boolean(getSessionCookie(request));
+	const hasSession = Boolean(getSessionCookie(request, { cookiePrefix: AUTH_COOKIE_PREFIX }));
 	// MailCheap Cloud's marketing site (site extensions): its landing page shows at / to signed-out visitors, rendered
 	// at landingPath, which never shows in the address bar. A self-hosted server has none of its pages.
 	const { landingPath, publicPages, isPublicPath } = siteExtensions;

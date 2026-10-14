@@ -85,7 +85,7 @@ async function signInWithGoogle({ email, verified = true, sub = email }) {
 		const callback = new Request(`http://localhost:3000/api/auth/callback/google?code=test-code&state=${url.searchParams.get("state")}`, { headers: { cookie } });
 		const response = await as(visitor, () => m.authRoute.GET(callback));
 		const location = new URL(response.headers.get("location"), "http://localhost:3000");
-		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("better-auth.session_token=") && !line.startsWith("better-auth.session_token=;"));
+		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("mailcheap.session_token=") && !line.startsWith("mailcheap.session_token=;"));
 		return { status: response.status, path: location.pathname, error: location.searchParams.get("error"), isSignedIn: cookies.length > 0 };
 	} finally {
 		globalThis.fetch = previousFetch;

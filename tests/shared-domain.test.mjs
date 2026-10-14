@@ -205,7 +205,7 @@ describe("sessions", () => {
 	test("the session cookie is host-only, and Better Auth trusts mailcheap.ai's origin alone", async () => {
 		const context = await (await m.auth.getAuth()).$context;
 		const { name, attributes } = context.authCookies.sessionToken;
-		assert.equal(name, "__Secure-better-auth.session_token");
+		assert.equal(name, "__Secure-mailcheap.session_token");
 		assert.deepEqual([attributes.domain, attributes.httpOnly, attributes.secure, attributes.sameSite], [undefined, true, true, "lax"]);
 		assert.deepEqual(context.trustedOrigins, [APP_URL]);
 		for (const origin of ["https://weekly.mailcheap.ai", "https://www.mailcheap.ai", "http://mailcheap.ai"]) assert.equal(context.isTrustedOrigin(origin), false, origin);
@@ -235,7 +235,7 @@ describe("sessions", () => {
 			const signedOut = await signOut(APP_URL);
 			assert.equal(signedOut.status, 200);
 			const setCookies = signedOut.headers.getSetCookie();
-			assert.ok(setCookies.some((header) => header.startsWith("__Secure-better-auth.session_token=")));
+			assert.ok(setCookies.some((header) => header.startsWith("__Secure-mailcheap.session_token=")));
 			for (const header of setCookies) assert.doesNotMatch(header, /domain=/i, header);
 		} finally {
 			console.error = error;
