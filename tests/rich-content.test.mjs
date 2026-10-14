@@ -6,7 +6,7 @@ import { UNSUBSCRIBE_PLACEHOLDER, hasContent, renderEmail } from "../lib/render-
 import { getSendProblem } from "../lib/sending-rules.js";
 import { firstImageUrl } from "../lib/thumbnail.js";
 
-process.env.SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
+process.env.BETTER_AUTH_SECRET = "test-session-secret-with-at-least-32-characters";
 process.env.APP_URL = "https://mail.example.com";
 
 const box = '<div data-callout=""><p>Startups I built</p></div>';
@@ -80,7 +80,12 @@ test("an empty editor document is not content", () => {
 	assert.equal(hasContent("<p>Hi</p>"), true);
 	assert.equal(hasContent('<img src="https://cdn.example.com/a.png">'), true);
 
-	const newsletter = { _id: "74f1a2b3c4d5e6f7a8b9c0d2", name: "Field notes", fromEmail: "jane@example.com" };
+	const newsletter = {
+		_id: "74f1a2b3c4d5e6f7a8b9c0d2",
+		name: "Field notes",
+		fromEmail: "jane@example.com",
+		postalAddress: "1 Main St, Paris",
+	};
 	const campaign = { format: "rich", subject: "Issue", html: "<p></p>" };
 	assert.equal(getSendProblem({ campaign, newsletter }), "Add content");
 	assert.equal(getSendProblem({ campaign: { ...campaign, html: "<p>Hello</p>" }, newsletter }), null);

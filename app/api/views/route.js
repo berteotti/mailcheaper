@@ -10,12 +10,14 @@ function noContent() {
 }
 
 // Archive pages send one beacon per issue per browser and day; this only counts the ones from people.
+// Only a published issue can be counted, whatever its account.
 export async function POST(request) {
 	const userAgent = request.headers.get("user-agent") ?? "";
 	const { id } = await request.json().catch(() => ({}));
 	if (!isObjectIdString(id) || !userAgent || BOT_PATTERN.test(userAgent)) return noContent();
 	if (await isRateLimited({ ...RATE_LIMIT, key: getClientIp(request.headers) })) return noContent();
 
+	// By the issue's unique id: views count whatever the account.
 	await execute(`UPDATE campaigns SET webViews = webViews + 1, updatedAt = ?
 		WHERE _id = lower(?) AND archiveSlug IS NOT NULL AND status IN ('sending', 'paused', 'sent')`, [Date.now(), id]);
 	return noContent();

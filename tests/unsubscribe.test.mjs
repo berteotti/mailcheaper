@@ -7,27 +7,27 @@ import {
 	verifyUnsubscribeToken,
 } from "../lib/unsubscribe.js";
 
-process.env.SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
+process.env.BETTER_AUTH_SECRET = "test-session-secret-with-at-least-32-characters";
 process.env.APP_URL = "https://mail.example.com/";
 
 const contactId = "64f1a2b3c4d5e6f7a8b9c0d1";
 const otherContactId = "64f1a2b3c4d5e6f7a8b9c0d9";
 const newsletterId = "74f1a2b3c4d5e6f7a8b9c0d2";
 
-function signLikeServer(json, secret = process.env.SESSION_SECRET) {
+function signLikeServer(json, secret = process.env.BETTER_AUTH_SECRET) {
 	const key = Buffer.from(crypto.hkdfSync("sha256", secret, "", "mailcheap-unsubscribe-v1", 32));
 	const payload = Buffer.from(json).toString("base64url");
 	return `${payload}.${crypto.createHmac("sha256", key).update(payload).digest("base64url")}`;
 }
 
 function withSecret(secret, callback) {
-	const original = process.env.SESSION_SECRET;
-	if (secret === undefined) delete process.env.SESSION_SECRET;
-	else process.env.SESSION_SECRET = secret;
+	const original = process.env.BETTER_AUTH_SECRET;
+	if (secret === undefined) delete process.env.BETTER_AUTH_SECRET;
+	else process.env.BETTER_AUTH_SECRET = secret;
 	try {
 		return callback();
 	} finally {
-		process.env.SESSION_SECRET = original;
+		process.env.BETTER_AUTH_SECRET = original;
 	}
 }
 
@@ -102,7 +102,7 @@ test("tokens signed with another secret are rejected", () => {
 	);
 });
 
-test("rotating SESSION_SECRET invalidates links in sent emails", () => {
+test("rotating BETTER_AUTH_SECRET invalidates links in sent emails", () => {
 	const token = createUnsubscribeToken({ contactId, newsletterId });
 	withSecret("rotated-session-secret-with-at-least-32-chars", () =>
 		assert.equal(verifyUnsubscribeToken(token), null)
@@ -110,9 +110,9 @@ test("rotating SESSION_SECRET invalidates links in sent emails", () => {
 	assert.deepEqual(verifyUnsubscribeToken(token), { contactId, newsletterId });
 });
 
-test("signing without SESSION_SECRET fails instead of using an empty key", () => {
+test("signing without BETTER_AUTH_SECRET fails instead of using an empty key", () => {
 	withSecret(undefined, () =>
-		assert.throws(() => createUnsubscribeToken({ contactId, newsletterId }), /SESSION_SECRET/)
+		assert.throws(() => createUnsubscribeToken({ contactId, newsletterId }), /BETTER_AUTH_SECRET/)
 	);
 });
 

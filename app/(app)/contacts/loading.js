@@ -20,10 +20,7 @@ export default function Loading() {
 				<Skeleton className="h-9 w-24 rounded-lg" />
 			</HeaderPage>
 			<div aria-hidden="true" className="flex flex-col gap-4">
-				<div className="flex flex-col gap-2 sm:flex-row">
-					<Skeleton className="h-9 flex-1 rounded-lg" />
-					<Skeleton className="h-9 rounded-lg sm:w-48" />
-				</div>
+				<Skeleton className="h-9 w-full rounded-lg" />
 				<div className="-mx-1 flex gap-1 overflow-hidden px-1 pb-1">
 					{STATUS_WIDTHS.map((width, index) => (
 						<Skeleton key={index} className={cn("h-8 shrink-0 rounded-full first:bg-foreground/15", width)} />
@@ -35,7 +32,6 @@ export default function Loading() {
 							<TableRow className="hover:bg-transparent">
 								<TableHead className="pl-4">Email</TableHead>
 								<TableHead>Status</TableHead>
-								<TableHead className="hidden md:table-cell">Newsletter</TableHead>
 								<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
 								<TableHead className="hidden text-right lg:table-cell">Clicks</TableHead>
 								<TableHead className="hidden text-right sm:table-cell">Added</TableHead>
@@ -45,7 +41,7 @@ export default function Loading() {
 						<TableBody>
 							{EMAIL_WIDTHS.map((width, index) => (
 								<TableRow key={index} className="hover:bg-transparent">
-									<TableCell className="max-w-0 py-2.5 pl-4 sm:w-2/5">
+									<TableCell className="w-full max-w-0 py-2.5 pl-4 sm:w-2/5">
 										<span className="flex items-center gap-2.5">
 											<Skeleton className="size-[26px] shrink-0 rounded-full" />
 											<Skeleton className="h-3.5" style={{ width: `${width}%` }} />
@@ -53,12 +49,6 @@ export default function Loading() {
 									</TableCell>
 									<TableCell>
 										<Skeleton className="h-6 w-16 rounded-full" />
-									</TableCell>
-									<TableCell className="hidden md:table-cell">
-										<span className="flex items-center gap-2">
-											<Skeleton className="size-[18px] rounded-full" />
-											<Skeleton className="h-3 w-20" />
-										</span>
 									</TableCell>
 									<TableCell className="hidden lg:table-cell">
 										<Skeleton className="ml-auto h-3 w-8" />

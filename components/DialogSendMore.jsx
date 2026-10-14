@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { sendCampaignToMore } from "@/app/(app)/campaigns/actions";
 import InputAudienceLimit, { countRecipients } from "@/components/InputAudienceLimit";
 import ListCleanupPreview from "@/components/ListCleanupPreview";
+import TextPlanLimit from "@/components/TextPlanLimit";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -20,10 +21,12 @@ import {
 } from "@/components/ui/dialog";
 import { summarizePreview } from "@/lib/cleanup";
 import { formatCount, formatNumber } from "@/lib/format";
+import { useToastError } from "@/lib/use-toast-error";
 import { useCleanupPreview } from "@/lib/use-cleanup-preview";
 
-export default function DialogSendMore({ campaignId, sentCount, remainingCount, isCleanupEnabled }) {
+export default function DialogSendMore({ campaignId, sentCount, remainingCount, emailsLeft, isCleanupEnabled }) {
 	const router = useRouter();
+	const toastError = useToastError();
 	const [isOpen, setIsOpen] = useState(false);
 	const [more, setMore] = useState("");
 	const [isSending, startSending] = useTransition();
@@ -33,6 +36,8 @@ export default function DialogSendMore({ campaignId, sentCount, remainingCount, 
 	const summary = preview?.enabled ? summarizePreview(preview, moreNumber > 0 ? sentCount + moreNumber : undefined) : null;
 	const remaining = preview?.enabled ? Math.max(0, preview.issue - sentCount) : remainingCount;
 	const recipients = countRecipients(more, remaining);
+	const emails = recipients + (summary?.lastChance ?? 0);
+	const isOverPlan = emailsLeft !== null && emails > emailsLeft;
 
 	function changeOpen(nextIsOpen) {
 		if (nextIsOpen && isCleanupEnabled) loadPreview();
@@ -42,7 +47,7 @@ export default function DialogSendMore({ campaignId, sentCount, remainingCount, 
 	function send() {
 		startSending(async () => {
 			const result = await sendCampaignToMore(campaignId, { additional: Number.parseInt(more, 10) || undefined });
-			if (result?.error) return toast.error(result.error);
+			if (result?.error) return toastError(result);
 			setIsOpen(false);
 			setMore("");
 			toast.success("Next step started");
@@ -68,11 +73,12 @@ export default function DialogSendMore({ campaignId, sentCount, remainingCount, 
 				</DialogHeader>
 				<InputAudienceLimit label="How many more" value={more} onChange={setMore} audienceCount={remaining} />
 				{isCleanupEnabled && <ListCleanupPreview summary={summary} isCounting={isCounting} error={preview?.error} />}
+				{isOverPlan && <TextPlanLimit emailsLeft={emailsLeft} />}
 				<DialogFooter>
 					<DialogClose asChild>
 						<Button variant="outline">Cancel</Button>
 					</DialogClose>
-					<Button onClick={send} disabled={isSending || recipients + (summary?.lastChance ?? 0) === 0} className="min-w-20">
+					<Button onClick={send} disabled={isSending || emails === 0 || isOverPlan} className="min-w-20">
 						{isSending ? <Loader2 className="animate-spin" /> : "Send"}
 					</Button>
 				</DialogFooter>

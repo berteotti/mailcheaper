@@ -7,6 +7,9 @@ import { toast } from "sonner";
 import { sendCampaign } from "@/app/(app)/campaigns/actions";
 import InputAudienceLimit, { countRecipients } from "@/components/InputAudienceLimit";
 import ListCleanupPreview from "@/components/ListCleanupPreview";
+import NoticeFirstSend from "@/components/NoticeFirstSend";
+import NoticeWarmup from "@/components/NoticeWarmup";
+import TextPlanLimit from "@/components/TextPlanLimit";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -20,18 +23,24 @@ import {
 } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { summarizePreview } from "@/lib/cleanup";
+import { FIRST_SEND } from "@/lib/first-send";
 import { formatCount, formatSendTime } from "@/lib/format";
+import { useToastError } from "@/lib/use-toast-error";
 import { useCleanupPreview } from "@/lib/use-cleanup-preview";
 
 export default function DialogSendCampaign({
 	campaignId,
 	audienceCount,
+	emailsLeft,
 	scheduledAt,
 	isCleanupEnabled,
+	warmup,
+	newContacts = 0,
 	blockingMessage,
 	onBeforeSend,
 }) {
 	const router = useRouter();
+	const toastError = useToastError();
 	const [isOpen, setIsOpen] = useState(false);
 	const [limit, setLimit] = useState("");
 	const [isSending, startSending] = useTransition();
@@ -40,6 +49,8 @@ export default function DialogSendCampaign({
 	const summary = preview?.enabled ? summarizePreview(preview, Number.parseInt(limit, 10)) : null;
 	const issueAudience = preview?.enabled ? preview.issue : audienceCount;
 	const recipients = summary ? summary.issue : countRecipients(limit, audienceCount);
+	const emails = recipients + (summary?.lastChance ?? 0);
+	const isOverPlan = emailsLeft !== null && emails > emailsLeft;
 
 	function changeOpen(nextIsOpen) {
 		if (nextIsOpen && isCleanupEnabled) loadPreview();
@@ -50,7 +61,7 @@ export default function DialogSendCampaign({
 		startSending(async () => {
 			if (!(await onBeforeSend())) return;
 			const result = await sendCampaign(campaignId, { audienceLimit: Number.parseInt(limit, 10) || undefined });
-			if (result?.error) return toast.error(result.error);
+			if (result?.error) return toastError(result);
 			setIsOpen(false);
 			toast.success("Sending started");
 			router.refresh();
@@ -91,13 +102,16 @@ export default function DialogSendCampaign({
 						{recipients < issueAudience && " Send it to more later from its page."}
 					</DialogDescription>
 				</DialogHeader>
+				{warmup && <NoticeWarmup warmup={warmup} />}
+				{newContacts > FIRST_SEND.minSlice && <NoticeFirstSend count={newContacts} />}
 				<InputAudienceLimit value={limit} onChange={setLimit} audienceCount={issueAudience} />
 				{isCleanupEnabled && <ListCleanupPreview summary={summary} isCounting={isCounting} error={preview?.error} />}
+				{isOverPlan && <TextPlanLimit emailsLeft={emailsLeft} />}
 				<DialogFooter>
 					<DialogClose asChild>
 						<Button variant="outline">Cancel</Button>
 					</DialogClose>
-					<Button onClick={send} disabled={isSending || recipients + (summary?.lastChance ?? 0) === 0} className="min-w-20">
+					<Button onClick={send} disabled={isSending || emails === 0 || isOverPlan} className="min-w-20">
 						{isSending ? <Loader2 className="animate-spin" /> : "Send"}
 					</Button>
 				</DialogFooter>

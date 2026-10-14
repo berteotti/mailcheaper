@@ -4,43 +4,31 @@ import HeaderPage from "@/components/HeaderPage";
 import StateEmpty from "@/components/StateEmpty";
 import TableCampaigns from "@/components/TableCampaigns";
 import { getIssuePageUrl } from "@/lib/archive-data";
-import { listRecentCampaigns } from "@/lib/campaign-queries";
-import { toNewsletterMap, toNewsletterOptions } from "@/lib/newsletters";
-import { listNewsletters } from "@/lib/newsletter-data";
+import { listNewsletterCampaigns } from "@/lib/campaign-queries";
+import { getSelectedNewsletter } from "@/lib/selected-newsletter";
 
 export const metadata = { title: "Campaigns" };
 
 export default async function CampaignsPage() {
-	const [campaigns, newsletters] = await Promise.all([
-		listRecentCampaigns(200),
-		listNewsletters(),
-	]);
-	const newslettersById = new Map(newsletters.map((newsletter) => [newsletter._id.toString(), newsletter]));
+	const { account, selected } = await getSelectedNewsletter();
+	const campaigns = selected ? await listNewsletterCampaigns(account, selected._id, 200) : [];
 	const pageUrls = Object.fromEntries(
 		campaigns
-			.map((campaign) => [
-				campaign._id.toString(),
-				getIssuePageUrl({ campaign, newsletter: newslettersById.get(campaign.newsletterId.toString()) }),
-			])
+			.map((campaign) => [campaign._id.toString(), getIssuePageUrl({ campaign, newsletter: selected })])
 			.filter(([, url]) => url)
 	);
 
 	return (
 		<>
 			<HeaderPage title="Campaigns">
-				<ButtonNewCampaign newsletters={toNewsletterOptions(newsletters)} />
+				<ButtonNewCampaign newsletterId={selected ? String(selected._id) : null} />
 			</HeaderPage>
 
 			{campaigns.length === 0 ? (
 				<StateEmpty icon={Send} title="No campaigns yet" />
 			) : (
 				<div className="animate-enter">
-					<TableCampaigns
-						campaigns={campaigns}
-						newsletters={toNewsletterMap(newsletters)}
-						hasActions
-						pageUrls={pageUrls}
-					/>
+					<TableCampaigns campaigns={campaigns} newsletter={selected} hasActions pageUrls={pageUrls} />
 				</div>
 			)}
 		</>

@@ -3,7 +3,7 @@ import CardNotice from "@/components/CardNotice";
 import FormConfirm from "@/components/FormConfirm";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { verifyConfirmToken } from "@/lib/confirmation";
-import { findNewsletter } from "@/lib/newsletter-data";
+import { findOpenNewsletter } from "@/lib/public-newsletters";
 
 // The URL carries the confirmation token: keep it out of search results and referrer headers.
 export const metadata = {
@@ -39,7 +39,7 @@ export default async function ConfirmPage({ searchParams }) {
 
 async function getNewsletter(newsletterId) {
 	try {
-		return await findNewsletter(newsletterId);
+		return await findOpenNewsletter({ _id: newsletterId });
 	} catch (error) {
 		console.error("[confirm] Could not load the newsletter:", error.message);
 		return null;

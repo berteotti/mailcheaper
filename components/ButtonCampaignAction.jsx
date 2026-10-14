@@ -1,17 +1,18 @@
 "use client";
 
 import { useTransition } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useToastError } from "@/lib/use-toast-error";
 
 export default function ButtonCampaignAction({ action, id, disabledReason, children }) {
 	const [isPending, startTransition] = useTransition();
+	const toastError = useToastError();
 
 	function run() {
 		startTransition(async () => {
 			const result = await action(id);
-			if (result?.error) toast.error(result.error);
+			if (result?.error) toastError(result);
 		});
 	}
 

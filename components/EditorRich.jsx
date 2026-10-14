@@ -7,6 +7,7 @@ import Image from "@tiptap/extension-image";
 import { Placeholder } from "@tiptap/extensions";
 import StarterKit from "@tiptap/starter-kit";
 import { toast } from "sonner";
+import DialogImagePicker from "@/components/DialogImagePicker";
 import MenuFormat from "@/components/MenuFormat";
 import { SlashCommand } from "@/components/MenuSlash";
 import { Callout } from "@/lib/editor-callout";
@@ -16,6 +17,7 @@ const MIN_HEIGHT = "min-h-[560px]";
 
 export default function EditorRich({ content, onChange }) {
 	const [isEditingLink, setIsEditingLink] = useState(false);
+	const [isPickingImage, setIsPickingImage] = useState(false);
 	const editor = useEditor({
 		immediatelyRender: false,
 		content,
@@ -45,7 +47,7 @@ export default function EditorRich({ content, onChange }) {
 				onDrop: (current, files, position) => insertImages(current, files, position),
 				onPaste: (current, files) => insertImages(current, files),
 			}),
-			SlashCommand.configure({ onPickImage: pickImages }),
+			SlashCommand.configure({ onPickImage: () => setIsPickingImage(true) }),
 		],
 		editorProps: {
 			attributes: { class: `prose-issue ${MIN_HEIGHT} px-5 py-5 outline-none`, "aria-label": "Content" },
@@ -65,22 +67,20 @@ export default function EditorRich({ content, onChange }) {
 		<>
 			<EditorContent editor={editor} />
 			<MenuFormat editor={editor} isEditingLink={isEditingLink} onEditLink={setIsEditingLink} />
+			<DialogImagePicker
+				open={isPickingImage}
+				onOpenChange={setIsPickingImage}
+				onSelect={(image) => insertImage(editor, image)}
+			/>
 		</>
 	);
 }
 
-// Safari only opens pickers for inputs in the document, so this one joins it until a choice is made.
-function pickImages(editor) {
-	const input = Object.assign(document.createElement("input"), {
-		type: "file",
-		accept: IMAGE_TYPES.join(","),
-		multiple: true,
-		hidden: true,
-	});
-	input.addEventListener("change", () => insertImages(editor, [...input.files]));
-	for (const event of ["change", "cancel"]) input.addEventListener(event, () => input.remove());
-	document.body.append(input);
-	input.click();
+// Where the slash command was typed: the editor keeps its selection while the picker has focus.
+function insertImage(editor, { url, width, height }) {
+	if (editor.isDestroyed) return;
+	const size = width && height ? getDisplaySize({ width, height }) : {};
+	editor.chain().focus().insertContent({ type: "image", attrs: { src: url, alt: "", ...size } }).run();
 }
 
 // Each picture shows right away from the local file and switches to its CDN URL once uploaded. The

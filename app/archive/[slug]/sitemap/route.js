@@ -19,7 +19,7 @@ export async function GET(_request, { params }) {
 	if (!newsletter) return new Response("Not found", { status: 404 });
 
 	const urls = getArchiveUrls(newsletter);
-	const issues = await listArchiveIssues(newsletter._id);
+	const issues = await listArchiveIssues(newsletter);
 	const latestDate = getIssueDate(issues[0]);
 	const xml = [
 		'<?xml version="1.0" encoding="UTF-8"?>',

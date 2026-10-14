@@ -1,9 +1,11 @@
+import { runPurge } from "../lib/account-purge.js";
 import { backupDatabase } from "../lib/backup.js";
-import { isSendingEnabled } from "../lib/config.js";
-import { commitJobs, completeJob, publishPendingJobs, pruneCompletedJobs, readJob } from "../lib/jobs.js";
+import { completeJob, publishPendingJobs, pruneCompletedJobs, readJob } from "../lib/jobs.js";
 import { enqueueDueCampaigns, runScheduledSend } from "../lib/scheduling.js";
-import { recoverStalledSends, sendMessageBatch } from "../lib/sending.js";
+import { checkFirstSend, recoverStalledSends, runSendJob } from "../lib/sending.js";
+import { handlePostshibaEvent } from "../lib/postshiba-webhook.js";
 import { handleSesEvent } from "../lib/ses-events.js";
+import { handleTenantEvent } from "../lib/tenant-events.js";
 
 // Must match the daily cron in alchemy.run.ts; every other trigger is the minute cron.
 const BACKUP_CRON = "17 3 * * *";
@@ -11,18 +13,16 @@ const BACKUP_CRON = "17 3 * * *";
 const MAX_RETRY_DELAY_SECONDS = 15 * 60;
 
 async function runJob(job) {
-	if (job.kind === "ses-event") return handleSesEvent(job.payload);
+	// Provider events are stored by their webhooks; each handler records an event once, so a replay is harmless.
+	if (job.kind === "ses-event") return handleSesEvent(job.payload, { eventId: job._id });
+	if (job.kind === "ses-tenant-event") return handleTenantEvent(job.payload);
+	if (job.kind === "postshiba-event") return handlePostshibaEvent(job.payload);
 	if (job.kind === "scheduled") return runScheduledSend(job.payload);
-	if (job.kind === "send") {
-		// Off: nothing is sent and the job ends. The cron republishes queued messages once it's back on.
-		if (!isSendingEnabled()) return { skipped: "sending is off" };
-		const result = await sendMessageBatch(job.payload.messageIds);
-		// Deferred batches go back through the outbox, so waiting never uses up the queue's retries.
-		if (result.retry && result.deferMs) {
-			await commitJobs([{ kind: "send", payload: job.payload, availableAt: Date.now() + result.deferMs }]);
-		}
-		return result;
-	}
+	// Handles sending being off, and writes the retry job back to the outbox for a deferred or throttled batch,
+	// so waiting never uses up the queue's retries.
+	if (job.kind === "send") return runSendJob(job.payload);
+	if (job.kind === "check-first-send") return checkFirstSend(job.payload);
+	if (job.kind === "purge-account") return runPurge(job.payload);
 	return { skipped: `unknown job kind ${job.kind}` };
 }
 

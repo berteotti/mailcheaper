@@ -21,12 +21,11 @@ const issue = {
 };
 
 afterEach(() => {
-	delete process.env.ARCHIVE_HOSTS;
+	delete process.env.SHARED_DOMAIN;
 });
 
 test("issues point search engines at the archive's domain", () => {
-	process.env.ARCHIVE_HOSTS = "news.example.com=field-notes";
-	const { metadata } = getIssueSeo(newsletter, issue, APP);
+	const { metadata } = getIssueSeo({ ...newsletter, archiveHost: "news.example.com" }, issue, APP);
 	assert.equal(metadata.alternates.canonical, "https://news.example.com/p/how-to-price-a-side-project");
 	assert.deepEqual(metadata.robots, { index: true, follow: true });
 	assert.deepEqual(metadata.title, { absolute: "How to price a side project" });
@@ -71,9 +70,8 @@ test("issues describe themselves as blog posts for search engines", () => {
 });
 
 test("the author page is a profile with the photo, bio and social profiles", () => {
-	process.env.ARCHIVE_HOSTS = "news.example.com=field-notes";
 	const author = { bio: "I write about building small software companies.", imageUrl: "/authors/jane.jpg" };
-	const { metadata, jsonLd } = getAuthorSeo({ ...newsletter, author }, APP);
+	const { metadata, jsonLd } = getAuthorSeo({ ...newsletter, author, archiveHost: "news.example.com" }, APP);
 	assert.equal(metadata.alternates.canonical, "https://news.example.com/authors/jane-doe");
 	assert.deepEqual(metadata.title, { absolute: "Jane Doe" });
 	assert.equal(metadata.description, "I write about building small software companies.");
@@ -100,13 +98,15 @@ test("the author page is a profile with the photo, bio and social profiles", () 
 });
 
 test("the archive home shares a generated card and canonicalizes to its domain's root", () => {
-	process.env.ARCHIVE_HOSTS = "news.example.com=field-notes";
-	const { metadata, jsonLd } = getHomeSeo(newsletter, APP);
+	process.env.SHARED_DOMAIN = "mailcheapmail.com";
+	const { metadata: shared } = getHomeSeo(newsletter, APP);
+	assert.equal(shared.alternates.canonical, "https://field-notes.mailcheapmail.com/", "without a subdomain of its own, the shared one");
+	const { metadata, jsonLd } = getHomeSeo({ ...newsletter, archiveHost: "news.example.com" }, APP);
 	assert.equal(metadata.alternates.canonical, "https://news.example.com/");
 	assert.equal(metadata.openGraph.images[0].url, "https://mailcheap.test/archive/field-notes/og");
 	assert.equal(jsonLd["@type"], "Blog");
 
-	delete process.env.ARCHIVE_HOSTS;
+	delete process.env.SHARED_DOMAIN;
 	const { metadata: withoutDomain } = getHomeSeo({ ...newsletter, socialLinks: [] }, APP);
 	assert.equal(withoutDomain.alternates.canonical, "https://mailcheap.test/archive/field-notes");
 	assert.equal(withoutDomain.twitter.creator, undefined);

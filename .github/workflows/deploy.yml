@@ -28,17 +28,36 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ADMIN_EMAIL: ${{ vars.ADMIN_EMAIL }}
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
-          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          MAILCHEAP_CLOUD: ${{ vars.MAILCHEAP_CLOUD }}
+          ADMIN_EMAILS: ${{ vars.ADMIN_EMAILS }}
+          ALLOWED_EMAILS: ${{ vars.ALLOWED_EMAILS }}
+          EMAIL_FROM: ${{ vars.EMAIL_FROM }}
+          GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
           APP_DOMAIN: ${{ vars.APP_DOMAIN }}
           ASSET_DOMAIN: ${{ vars.ASSET_DOMAIN }}
-          ARCHIVE_HOSTS: ${{ vars.ARCHIVE_HOSTS }}
           SENDING_ENABLED: ${{ vars.SENDING_ENABLED }}
+          EMAIL_PROVIDER: ${{ vars.EMAIL_PROVIDER }}
+          SEND_RATE_PER_SECOND: ${{ vars.SEND_RATE_PER_SECOND }}
           SES_REGION: ${{ vars.SES_REGION }}
+          SES_AWS_ACCOUNT_ID: ${{ vars.SES_AWS_ACCOUNT_ID }}
+          SES_SNS_TOPIC_ARN: ${{ vars.SES_SNS_TOPIC_ARN }}
+          SES_TENANT_SNS_TOPIC_ARN: ${{ vars.SES_TENANT_SNS_TOPIC_ARN }}
+          POSTSHIBA_TEAM_ID: ${{ vars.POSTSHIBA_TEAM_ID }}
+          POSTSHIBA_BULK_CLUSTER_ID: ${{ vars.POSTSHIBA_BULK_CLUSTER_ID }}
+          POSTSHIBA_TRANSACTIONAL_CLUSTER_ID: ${{ vars.POSTSHIBA_TRANSACTIONAL_CLUSTER_ID }}
+          POSTSHIBA_API_URL: ${{ vars.POSTSHIBA_API_URL }}
+          POSTSHIBA_INJECT_URL: ${{ vars.POSTSHIBA_INJECT_URL }}
+          SHARED_DOMAIN: ${{ vars.SHARED_DOMAIN }}
+          ARCHIVE_CNAME_TARGET: ${{ vars.ARCHIVE_CNAME_TARGET }}
+          DNS_BROKER_URL: ${{ vars.DNS_BROKER_URL }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           SES_ACCESS_KEY_ID: ${{ secrets.SES_ACCESS_KEY_ID }}
           SES_SECRET_ACCESS_KEY: ${{ secrets.SES_SECRET_ACCESS_KEY }}
-          SES_CONFIGURATION_SET: ${{ vars.SES_CONFIGURATION_SET }}
-          SES_SNS_TOPIC_ARN: ${{ vars.SES_SNS_TOPIC_ARN }}
-          SEND_RATE_PER_SECOND: ${{ vars.SEND_RATE_PER_SECOND }}
-          ALERT_FROM: ${{ vars.ALERT_FROM }}
+          POSTSHIBA_API_KEY: ${{ secrets.POSTSHIBA_API_KEY }}
+          POSTSHIBA_WEBHOOK_SECRET: ${{ secrets.POSTSHIBA_WEBHOOK_SECRET }}
+          CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
+          DNS_BROKER_SECRET: ${{ secrets.DNS_BROKER_SECRET }}

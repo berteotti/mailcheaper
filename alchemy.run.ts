@@ -39,20 +39,45 @@ export default Alchemy.Stack(
 		const jobsQueue = yield* Cloudflare.Queues.Queue("JobsQueue");
 		const deadLetters = yield* Cloudflare.Queues.Queue("JobsDeadLetters");
 
+		// Everything both Workers read from process.env (lib/config.js and the provider modules). Optional values
+		// default to empty, which turns their feature off; see .env.example for each one.
 		const shared = {
 			DB: db,
 			JOBS_QUEUE: jobsQueue,
-			ADMIN_EMAIL: Config.String("ADMIN_EMAIL"),
-			SESSION_SECRET: Config.Redacted("SESSION_SECRET"),
+			// Exactly "true" on MailCheap Cloud: billing, plan limits, open sign-up.
+			MAILCHEAP_CLOUD: optional("MAILCHEAP_CLOUD"),
+			BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
+			ADMIN_EMAILS: Config.String("ADMIN_EMAILS"),
+			ALLOWED_EMAILS: optional("ALLOWED_EMAILS"),
+			RESEND_API_KEY: optionalSecret("RESEND_API_KEY"),
+			EMAIL_FROM: optional("EMAIL_FROM"),
+			STRIPE_SECRET_KEY: optionalSecret("STRIPE_SECRET_KEY"),
+			STRIPE_WEBHOOK_SECRET: optionalSecret("STRIPE_WEBHOOK_SECRET"),
+			// The kill switch: both Workers read it, so a deploy with anything but "true" stops every send.
+			SENDING_ENABLED: Config.String("SENDING_ENABLED").pipe(Config.withDefault("false")),
+			EMAIL_PROVIDER: optional("EMAIL_PROVIDER"),
+			SEND_RATE_PER_SECOND: optional("SEND_RATE_PER_SECOND"),
+			POSTSHIBA_API_KEY: optionalSecret("POSTSHIBA_API_KEY"),
+			POSTSHIBA_TEAM_ID: optional("POSTSHIBA_TEAM_ID"),
+			POSTSHIBA_BULK_CLUSTER_ID: optional("POSTSHIBA_BULK_CLUSTER_ID"),
+			POSTSHIBA_TRANSACTIONAL_CLUSTER_ID: optional("POSTSHIBA_TRANSACTIONAL_CLUSTER_ID"),
+			POSTSHIBA_WEBHOOK_SECRET: optionalSecret("POSTSHIBA_WEBHOOK_SECRET"),
+			POSTSHIBA_API_URL: optional("POSTSHIBA_API_URL"),
+			POSTSHIBA_INJECT_URL: optional("POSTSHIBA_INJECT_URL"),
+			CREDENTIALS_ENCRYPTION_KEY: optionalSecret("CREDENTIALS_ENCRYPTION_KEY"),
 			SES_REGION: Config.String("SES_REGION").pipe(Config.withDefault("us-east-1")),
 			SES_ACCESS_KEY_ID: optionalSecret("SES_ACCESS_KEY_ID"),
 			SES_SECRET_ACCESS_KEY: optionalSecret("SES_SECRET_ACCESS_KEY"),
-			SES_CONFIGURATION_SET: optional("SES_CONFIGURATION_SET"),
-			SEND_RATE_PER_SECOND: optional("SEND_RATE_PER_SECOND"),
-			ALERT_FROM: optional("ALERT_FROM"),
-			ARCHIVE_HOSTS: optional("ARCHIVE_HOSTS"),
-			// The kill switch: both Workers read it, so a deploy with anything but "true" stops every send.
-			SENDING_ENABLED: Config.String("SENDING_ENABLED").pipe(Config.withDefault("false")),
+			SES_AWS_ACCOUNT_ID: optional("SES_AWS_ACCOUNT_ID"),
+			SES_SNS_TOPIC_ARN: optional("SES_SNS_TOPIC_ARN"),
+			SES_TENANT_SNS_TOPIC_ARN: optional("SES_TENANT_SNS_TOPIC_ARN"),
+			SHARED_DOMAIN: optional("SHARED_DOMAIN"),
+			ARCHIVE_CNAME_TARGET: optional("ARCHIVE_CNAME_TARGET"),
+			DNS_BROKER_URL: optional("DNS_BROKER_URL"),
+			DNS_BROKER_SECRET: optionalSecret("DNS_BROKER_SECRET"),
+			// Uploads: R2, public through ASSET_DOMAIN or the app's /media. Account purges run in the jobs Worker.
+			ASSETS_BUCKET: assets,
+			ASSET_URL: assetDomain ? `https://${assetDomain}` : "",
 			// Local only: send to a mock SES instead of AWS.
 			...(stage === "local" ? { SES_ENDPOINT: optional("SES_ENDPOINT") } : {}),
 		};
@@ -65,12 +90,9 @@ export default Alchemy.Stack(
 			observability: { enabled: true },
 			env: {
 				...shared,
-				ADMIN_PASSWORD: Config.Redacted("ADMIN_PASSWORD"),
-				SES_SNS_TOPIC_ARN: optional("SES_SNS_TOPIC_ARN"),
+				GOOGLE_CLIENT_ID: optional("GOOGLE_CLIENT_ID"),
+				GOOGLE_CLIENT_SECRET: optionalSecret("GOOGLE_CLIENT_SECRET"),
 				APP_URL: appDomain ? `https://${appDomain}` : Cloudflare.Worker.URL,
-				// Empty: uploads are served by the app itself at /media (lib/assets.js).
-				ASSET_URL: assetDomain ? `https://${assetDomain}` : "",
-				ASSETS_BUCKET: assets,
 				RATE_LIMITER: Cloudflare.DurableObject("RateLimiter"),
 				SES_PACER: Cloudflare.DurableObject("SesPacer"),
 			},
@@ -86,7 +108,16 @@ export default Alchemy.Stack(
 			build: {
 				input: {
 					resolve: {
-						alias: { "@": resolve("."), "server-only": resolve("worker/empty.js") },
+						// Shared modules import Next.js APIs that only the app Worker (vinext) provides; the jobs Worker
+						// gets small stand-ins, never Next.js itself (its bundled code expects Node).
+						alias: {
+							"@": resolve("."),
+							"server-only": resolve("worker/empty.js"),
+							"next/headers": resolve("worker/next/headers.js"),
+							"next/navigation": resolve("worker/next/navigation.js"),
+							"next/server": resolve("worker/next/server.js"),
+							"next/cache": resolve("worker/next/cache.js"),
+						},
 						// Like the app's Vite build: packages' Worker/browser builds (the AWS SDK's fetch-based
 						// runtime config), not their Node builds.
 						conditionNames: ["workerd", "worker", "browser", "import", "module", "default"],
@@ -112,6 +143,13 @@ export default Alchemy.Stack(
 			settings: { batchSize: 5, maxConcurrency: 4, maxRetries: 8, maxWaitTimeMs: 2000 },
 		});
 
-		return { url: appUrl, sesWebhookUrl: Output.interpolate`${appUrl}/api/webhooks/ses`, assetUrl: assetDomain || "(served by the app at /media)" };
+		return {
+			url: appUrl,
+			sesWebhookUrl: Output.interpolate`${appUrl}/api/webhooks/ses`,
+			sesTenantWebhookUrl: Output.interpolate`${appUrl}/api/webhooks/ses-tenants`,
+			postshibaWebhookUrl: Output.interpolate`${appUrl}/api/webhooks/postshiba`,
+			stripeWebhookUrl: Output.interpolate`${appUrl}/api/webhooks/stripe`,
+			assetUrl: assetDomain || "(served by the app at /media)",
+		};
 	}),
 );

@@ -31,9 +31,8 @@ export default function SkeletonCampaigns({ rows = 8, hasActions = false }) {
 							<TableCell className="w-full max-w-0 py-3 pl-4 sm:w-1/2">
 								<div className="flex min-w-0 items-center gap-3.5">
 									<Skeleton className="h-10 w-16 shrink-0" />
-									<div className="flex min-w-0 flex-1 flex-col gap-1.5">
+									<div className="min-w-0 flex-1">
 										<Skeleton className="h-3.5" style={{ width: `${SUBJECT_WIDTHS[index % SUBJECT_WIDTHS.length]}%` }} />
-										<Skeleton className="h-2.5 w-20" />
 									</div>
 								</div>
 							</TableCell>

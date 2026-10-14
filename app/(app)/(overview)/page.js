@@ -1,86 +1,78 @@
 import { Suspense } from "react";
 import { cookies } from "next/headers";
 import Link from "next/link";
-import { ChevronRight, Newspaper, Settings2, TriangleAlert } from "lucide-react";
-import BadgeStatus from "@/components/BadgeStatus";
-import ButtonNewCampaign from "@/components/ButtonNewCampaign";
+import { ChevronRight, Newspaper, Plus } from "lucide-react";
+import BannerUsage from "@/components/BannerUsage";
+import CardUsage from "@/components/CardUsage";
+import CardWarmup from "@/components/CardWarmup";
 import ChartSends from "@/components/ChartSends";
 import ChartSubscribers from "@/components/ChartSubscribers";
 import CookieTimezone from "@/components/CookieTimezone";
-import ListDomainStatus from "@/components/ListDomainStatus";
+import HeaderPage from "@/components/HeaderPage";
 import ListStats from "@/components/ListStats";
 import SkeletonCampaigns from "@/components/SkeletonCampaigns";
-import {
-	SkeletonDomainList,
-	SkeletonSends,
-	SkeletonSesAccount,
-	SkeletonStats,
-	SkeletonSubscribers,
-} from "@/components/SkeletonOverview";
+import { SkeletonSends, SkeletonStats, SkeletonSubscribers } from "@/components/SkeletonOverview";
 import StateEmpty from "@/components/StateEmpty";
 import SwatchChart from "@/components/SwatchChart";
 import TableCampaigns from "@/components/TableCampaigns";
-import TabsNewsletter from "@/components/TabsNewsletter";
 import { Button } from "@/components/ui/button";
-import { listRecentCampaigns } from "@/lib/campaign-queries";
-import { listNewslettersWithActiveCounts } from "@/lib/contacts";
-import { formatCompact, formatNumber, formatSigned } from "@/lib/format";
-import { NEWSLETTER_SUMMARY_FIELDS, toNewsletterMap, toNewsletterOptions } from "@/lib/newsletters";
+import { hasActiveSubscription } from "@/lib/account-state";
+import { requireAccount } from "@/lib/auth";
+import { countStartedCampaigns, listNewsletterCampaigns } from "@/lib/campaign-queries";
+import { formatNumber, formatSigned } from "@/lib/format";
+import { ADD_NEWSLETTER_PATH } from "@/lib/newsletters";
 import { getEmailStats, getHourlySends, getSubscriberHistory } from "@/lib/overview-data";
 import { PERIOD_DAYS } from "@/lib/overview-series";
-import { getSesAccount, listSesDomains } from "@/lib/ses";
+import { getAccountPlan } from "@/lib/plans";
+import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
+import { getWarmup } from "@/lib/send-spread";
 import { TIME_ZONE_COOKIE, resolveTimeZone, timeZoneLabel } from "@/lib/time-zone";
+import { getUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
 
-// Everything above Domains is about one newsletter, the largest unless ?newsletter= picks one. The page
-// waits for one query (the tabs); every section then loads on its own behind a skeleton of its size.
+// The open newsletter's numbers, then the plan its account's newsletters share. The page waits for the
+// newsletter; every section then loads on its own behind a skeleton of its size.
 export default async function OverviewPage({ searchParams }) {
-	const [{ newsletter: newsletterParam }, cookieStore] = await Promise.all([searchParams, cookies()]);
+	const { account } = await requireAccount();
+	const [view, { newsletter: newsletterParam }, cookieStore, usage, place] = await Promise.all([
+		getSelectedNewsletter(),
+		searchParams,
+		cookies(),
+		getUsage(account),
+		countStartedCampaigns(account),
+	]);
+	openNewsletter(view, newsletterParam, "/");
+	const { newsletters, selected } = view;
 	const timeZone = resolveTimeZone(cookieStore.get(TIME_ZONE_COOKIE)?.value);
-	const newsletters = await listNewslettersWithActiveCounts(NEWSLETTER_SUMMARY_FIELDS);
-	const bySize = newsletters.toSorted((a, b) => b.activeCount - a.activeCount);
-	const selected = bySize.find(({ _id }) => _id.toString() === newsletterParam) ?? bySize[0];
 	const selectedId = selected?._id.toString();
+	const accountId = account._id;
+	const hasPlan = hasActiveSubscription(account);
+	const warmup = hasPlan ? getWarmup(account, { place }) : null;
 
 	return (
 		<>
-			<h1 className="sr-only">Overview</h1>
 			<Suspense fallback={null}>
 				<CookieTimezone />
 			</Suspense>
-
-			<header className="mb-6 flex items-center justify-between gap-3 animate-enter">
-				{selected ? (
-					<div className="flex min-w-0 items-center gap-1">
-						<TabsNewsletter newsletters={bySize} selectedId={selectedId} />
-						<Link
-							href={`/newsletters/${selectedId}`}
-							aria-label={`${selected.name} settings`}
-							title="Newsletter settings"
-							className="grid size-9 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-muted hover:text-foreground"
-						>
-							<Settings2 className="size-4" />
-						</Link>
-					</div>
-				) : (
-					<span />
-				)}
-				<div className="shrink-0">
-					<ButtonNewCampaign newsletters={toNewsletterOptions(newsletters)} />
-				</div>
-			</header>
+			{hasPlan && <BannerUsage usage={usage} />}
+			<HeaderPage title="Overview" />
 
 			<div className="flex flex-col gap-8">
+				{warmup && (
+					<section style={{ "--stagger": 1 }} className="animate-enter">
+						<CardWarmup warmup={warmup} />
+					</section>
+				)}
 				{selected ? (
 					<>
 						<Section title={`Last ${PERIOD_DAYS} days`} stagger={1}>
 							<div className="overflow-hidden rounded-2xl bg-card shadow-border">
 								<Suspense key={`stats-${selectedId}`} fallback={<SkeletonStats />}>
-									<StatsEmail newsletterId={selected._id} />
+									<StatsEmail accountId={accountId} newsletterId={selected._id} />
 								</Suspense>
 								<div className="border-t border-border/60">
 									<Suspense key={`subscribers-${selectedId}`} fallback={<SkeletonSubscribers />}>
-										<CardSubscribers newsletterId={selected._id} timeZone={timeZone} />
+										<CardSubscribers accountId={accountId} newsletterId={selected._id} timeZone={timeZone} />
 									</Suspense>
 								</div>
 							</div>
@@ -88,42 +80,39 @@ export default async function OverviewPage({ searchParams }) {
 
 						<Section title="Today" stagger={2}>
 							<Suspense key={`sends-${selectedId}`} fallback={<SkeletonSends />}>
-								<CardSends newsletterId={selected._id} timeZone={timeZone} />
+								<CardSends accountId={accountId} newsletterId={selected._id} timeZone={timeZone} />
 							</Suspense>
 						</Section>
 
 						<Section title="Campaigns" href="/campaigns" stagger={3}>
 							<Suspense key={`campaigns-${selectedId}`} fallback={<SkeletonCampaigns rows={5} />}>
-								<TableRecentCampaigns newsletterId={selected._id} newsletters={newsletters} />
+								<TableRecentCampaigns account={account} newsletter={selected} />
 							</Suspense>
 						</Section>
 					</>
 				) : (
 					<StateEmpty icon={Newspaper} title="No newsletters yet">
 						<Button asChild variant="outline" size="sm">
-							<Link href="/newsletters">Go to newsletters</Link>
+							<Link href={ADD_NEWSLETTER_PATH}>
+								<Plus data-icon="inline-start" />
+								Add a newsletter
+							</Link>
 						</Button>
 					</StateEmpty>
 				)}
 
-				<Section title="Domains" href="/domains" stagger={4}>
-					<Suspense fallback={<SkeletonDomainList />}>
-						<SectionDomains />
-					</Suspense>
-				</Section>
-
-				<Section title="System" stagger={5}>
-					<Suspense fallback={<SkeletonSesAccount />}>
-						<StripSesAccount />
-					</Suspense>
-				</Section>
+				{hasPlan && usage.emailsLimit !== null && (
+					<Section title={`${getAccountPlan(account)?.name ?? "Your"} plan`} href="/billing" stagger={4}>
+						<CardUsage usage={usage} isShared={newsletters.length > 1} />
+					</Section>
+				)}
 			</div>
 		</>
 	);
 }
 
-async function StatsEmail({ newsletterId }) {
-	const stats = await getEmailStats({ newsletterId });
+async function StatsEmail({ accountId, newsletterId }) {
+	const stats = await getEmailStats({ accountId, newsletterId });
 	return (
 		<div className="animate-fade-in">
 			<ListStats current={stats.current} previous={stats.previous} />
@@ -131,8 +120,8 @@ async function StatsEmail({ newsletterId }) {
 	);
 }
 
-async function CardSubscribers({ newsletterId, timeZone }) {
-	const history = await getSubscriberHistory({ newsletterId, timeZone });
+async function CardSubscribers({ accountId, newsletterId, timeZone }) {
+	const history = await getSubscriberHistory({ accountId, newsletterId, timeZone });
 
 	return (
 		<div className="flex flex-col gap-6 p-5 animate-fade-in sm:p-6">
@@ -160,8 +149,8 @@ async function CardSubscribers({ newsletterId, timeZone }) {
 	);
 }
 
-async function CardSends({ newsletterId, timeZone }) {
-	const hours = await getHourlySends({ newsletterId, timeZone });
+async function CardSends({ accountId, newsletterId, timeZone }) {
+	const hours = await getHourlySends({ accountId, newsletterId, timeZone });
 	const sentToday = hours.reduce((sum, { today }) => sum + (today ?? 0), 0);
 	const sentYesterday = hours.reduce((sum, { yesterday }) => sum + yesterday, 0);
 
@@ -190,8 +179,8 @@ async function CardSends({ newsletterId, timeZone }) {
 	);
 }
 
-async function TableRecentCampaigns({ newsletterId, newsletters }) {
-	const campaigns = await listRecentCampaigns(5, newsletterId);
+async function TableRecentCampaigns({ account, newsletter }) {
+	const campaigns = await listNewsletterCampaigns(account, newsletter._id, 5);
 	if (campaigns.length === 0) {
 		return (
 			<p className="rounded-xl px-4 py-6 text-center text-sm text-muted-foreground shadow-border animate-fade-in">
@@ -202,81 +191,7 @@ async function TableRecentCampaigns({ newsletterId, newsletters }) {
 
 	return (
 		<div className="animate-fade-in">
-			<TableCampaigns campaigns={campaigns} newsletters={toNewsletterMap(newsletters)} />
-		</div>
-	);
-}
-
-async function SectionDomains() {
-	const domains = await listSesDomains();
-
-	if (domains.error || domains.length === 0) {
-		return (
-			<p className="flex items-center gap-3 rounded-xl px-4 py-4 text-sm text-muted-foreground shadow-border animate-fade-in">
-				{domains.error && <TriangleAlert className="size-4 shrink-0 text-amber-500" />}
-				<span className="truncate">{domains.error ? `SES unreachable: ${domains.error}` : "No domains in SES"}</span>
-			</p>
-		);
-	}
-
-	return (
-		<div className="animate-fade-in">
-			<ListDomainStatus domains={domains} />
-		</div>
-	);
-}
-
-async function StripSesAccount() {
-	const account = await getSesAccount();
-
-	if (account.error) {
-		return (
-			<p className="flex items-center gap-3 rounded-xl px-4 py-4 text-sm text-muted-foreground shadow-border animate-fade-in">
-				<TriangleAlert className="size-4 shrink-0 text-amber-500" />
-				<span className="truncate">SES unreachable: {account.error}</span>
-			</p>
-		);
-	}
-
-	const accountLabel = account.productionAccess
-		? "Production"
-		: account.reviewStatus === "PENDING"
-			? "Sandbox, in review"
-			: "Sandbox";
-	const quotaUsed = account.max24HourSend ? Math.min(account.sentLast24Hours / account.max24HourSend, 1) : 0;
-	const items = [
-		{
-			label: "SES account",
-			value: <BadgeStatus status={account.productionAccess ? "active" : "sandbox"} label={accountLabel} />,
-		},
-		{ label: "Health", value: <BadgeStatus status={account.enforcementStatus} /> },
-		{
-			label: "Daily quota",
-			value: (
-				<span className="flex w-full flex-col gap-1.5">
-					{formatNumber(account.sentLast24Hours)} / {formatCompact(account.max24HourSend)}
-					<span className="h-1 w-full max-w-32 overflow-hidden rounded-full bg-muted">
-						<span
-							className="block h-full rounded-full bg-foreground/70"
-							style={{ width: `${Math.max(quotaUsed * 100, quotaUsed > 0 ? 2 : 0)}%` }}
-						/>
-					</span>
-				</span>
-			),
-		},
-		{ label: "Max rate", value: `${formatNumber(account.maxSendRate)}/s` },
-	];
-
-	return (
-		<div className="overflow-hidden rounded-xl bg-card shadow-border animate-fade-in">
-			<dl className="grid grid-cols-2 gap-px bg-border/60 lg:grid-cols-4">
-				{items.map(({ label, value }) => (
-					<div key={label} className="flex min-h-[66px] flex-col items-start justify-center gap-1.5 bg-card px-4 py-3">
-						<dt className="text-xs text-muted-foreground">{label}</dt>
-						<dd className="w-full text-sm font-medium tabular-nums">{value}</dd>
-					</div>
-				))}
-			</dl>
+			<TableCampaigns campaigns={campaigns} newsletter={newsletter} />
 		</div>
 	);
 }

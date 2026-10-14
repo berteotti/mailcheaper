@@ -31,6 +31,10 @@ const DOT_TONES = {
 
 const STATUS_TONES = {
 	active: "green",
+	trialing: "green",
+	past_due: "amber",
+	incomplete: "amber",
+	unpaid: "red",
 	sent: "green",
 	delivered: "green",
 	success: "green",
@@ -48,4 +52,6 @@ const STATUS_TONES = {
 	complained: "red",
 	failed: "red",
 	shutdown: "red",
+	deleting: "red",
+	blocked: "red",
 };

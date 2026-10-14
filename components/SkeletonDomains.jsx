@@ -1,11 +1,6 @@
 import { Skeleton } from "@/components/ui/skeleton";
 
+// As tall as the add domain form, so the page doesn't move when it streams in.
 export default function SkeletonDomains() {
-	return (
-		<div className="flex flex-col gap-3">
-			{[0, 1].map((key) => (
-				<Skeleton key={key} className="h-[118px] rounded-xl" />
-			))}
-		</div>
-	);
+	return <Skeleton className="h-[385px] rounded-xl sm:h-[265px]" />;
 }

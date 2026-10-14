@@ -8,15 +8,26 @@ import NavLinks from "@/components/NavLinks";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
-export default function NavMobile({ footer }) {
+// The newsletter menu stays in the top bar, so a phone always shows which newsletter is open.
+export default function NavMobile({ isAdmin, switcher, footer }) {
 	const [isOpen, setIsOpen] = useState(false);
 
+	// The account menu's items render in a portal, but React still bubbles their clicks up to the footer.
+	function closeAfterLink(event) {
+		if (event.target.closest("a[href]")) setIsOpen(false);
+	}
+
 	return (
-		<header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border/60 bg-background/80 pr-2 pl-4 backdrop-blur-md md:hidden">
-			<Link href="/" className="flex items-center gap-2">
-				<LogoMailcheap />
-				<span className="text-sm font-semibold tracking-tight">Mailcheap</span>
-			</Link>
+		<header className="sticky top-(--plan-bar-height) z-30 flex h-14 items-center justify-between gap-2 border-b border-border/60 bg-background/80 px-2 backdrop-blur-md md:hidden">
+			<div className="flex min-w-0 items-center">
+				<Link href="/" aria-label="MailCheap" className="grid size-10 shrink-0 place-items-center rounded-lg">
+					<LogoMailcheap />
+				</Link>
+				<span aria-hidden="true" className="mr-1 text-xl font-light text-foreground/15">
+					/
+				</span>
+				{switcher}
+			</div>
 			<Sheet open={isOpen} onOpenChange={setIsOpen}>
 				<SheetTrigger asChild>
 					<Button variant="ghost" size="icon" aria-label="Menu">
@@ -25,8 +36,10 @@ export default function NavMobile({ footer }) {
 				</SheetTrigger>
 				<SheetContent side="left" className="w-64 gap-0 p-3 pt-14">
 					<SheetTitle className="sr-only">Menu</SheetTitle>
-					<NavLinks onNavigate={() => setIsOpen(false)} />
-					<div className="mt-auto">{footer}</div>
+					<NavLinks isAdmin={isAdmin} onNavigate={() => setIsOpen(false)} />
+					<div className="mt-auto pt-4" onClick={closeAfterLink}>
+						{footer}
+					</div>
 				</SheetContent>
 			</Sheet>
 		</header>

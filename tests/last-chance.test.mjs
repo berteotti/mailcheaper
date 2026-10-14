@@ -3,10 +3,10 @@ import { test } from "node:test";
 import { createConfirmToken, verifyConfirmToken } from "../lib/confirmation.js";
 import { createKeepToken, getKeepUrl, verifyKeepToken } from "../lib/last-chance.js";
 import { KEEP_URL_PLACEHOLDER, getLastChanceContent } from "../lib/last-chance-content.js";
-import { buildRecipientEmail, getCampaignPauseReason, getCampaignStatsPath } from "../lib/sending-rules.js";
+import { buildRecipientEmail, getCampaignRateProblem, getCampaignStatsPath } from "../lib/sending-rules.js";
 import { createUnsubscribeToken, verifyUnsubscribeToken } from "../lib/unsubscribe.js";
 
-process.env.SESSION_SECRET ||= "test-secret-for-last-chance-links";
+process.env.BETTER_AUTH_SECRET ||= "test-secret-for-last-chance-links";
 process.env.APP_URL ||= "https://mailcheap.test";
 
 const REFERENCE = { contactId: "64f1a2b3c4d5e6f7a8b9c0a1", newsletterId: "64f1a2b3c4d5e6f7a8b9c0b1" };
@@ -78,9 +78,9 @@ test("last-chance emails keep their own counters but share the pause limits", ()
 	assert.equal(getCampaignStatsPath("campaign"), "stats");
 	assert.equal(getCampaignStatsPath("last-chance"), "lastChance");
 
-	assert.equal(getCampaignPauseReason({ sent: 900, complained: 0 }), null);
-	assert.equal(getCampaignPauseReason({ sent: 900, complained: 0 }, { sent: 100, complained: 1 }), "complaint rate");
-	assert.equal(getCampaignPauseReason({ sent: 40 }, { sent: 50, bounced: 30 }), null, "under 100 sent in total");
-	assert.equal(getCampaignPauseReason({ sent: 400, bounced: 2 }, { sent: 100, bounced: 9 }), "bounce rate");
-	assert.equal(getCampaignPauseReason({ sent: 400, bounced: 2 }, undefined), null);
+	const level = (stats, lastChance) => getCampaignRateProblem(stats, lastChance)?.level ?? null;
+	assert.equal(level({ sent: 900, complained: 1 }), null);
+	assert.equal(level({ sent: 900, complained: 1 }, { sent: 100, complained: 1 }), "pause", "2 complaints in all");
+	assert.equal(level({ sent: 400, bounced: 2 }, { sent: 100, bounced: 9 }), "pause", "11 bounces of 500 in all, at 2.20%");
+	assert.equal(level({ sent: 400, bounced: 2 }, undefined), null);
 });

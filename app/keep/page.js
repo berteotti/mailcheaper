@@ -3,7 +3,7 @@ import CardNotice from "@/components/CardNotice";
 import FormKeep from "@/components/FormKeep";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { verifyKeepToken } from "@/lib/last-chance";
-import { findNewsletter } from "@/lib/newsletter-data";
+import { findNewsletterAnywhere } from "@/lib/public-newsletters";
 
 // The URL carries the keep token: keep it out of search results and referrer headers.
 export const metadata = {
@@ -37,7 +37,7 @@ export default async function KeepPage({ searchParams }) {
 
 async function getNewsletter(newsletterId) {
 	try {
-		return await findNewsletter(newsletterId);
+		return await findNewsletterAnywhere({ _id: newsletterId });
 	} catch (error) {
 		console.error("[keep] Could not load the newsletter:", error.message);
 		return null;

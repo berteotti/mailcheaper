@@ -10,6 +10,7 @@ import DialogDiscardCampaign from "@/components/DialogDiscardCampaign";
 import DialogScheduleCampaign from "@/components/DialogScheduleCampaign";
 import DialogSendCampaign from "@/components/DialogSendCampaign";
 import EditorRich from "@/components/EditorRich";
+import GatePlan from "@/components/GatePlan";
 import HeaderPage from "@/components/HeaderPage";
 import InputCampaignSlug from "@/components/InputCampaignSlug";
 import ListChecks from "@/components/ListChecks";
@@ -27,6 +28,8 @@ import { markdownToHtml } from "@/lib/markdown";
 import { getPresendChecks } from "@/lib/presend-checks";
 import { UNSUBSCRIBE_PLACEHOLDER, renderEmail, withResponsiveImages } from "@/lib/render-email";
 import { slugify } from "@/lib/slug";
+import { usePaywall } from "@/lib/use-paywall";
+import { useToastError } from "@/lib/use-toast-error";
 import { useAutosave } from "@/lib/use-autosave";
 
 const UPLOADING_MESSAGE = "Wait for images to finish uploading";
@@ -35,11 +38,15 @@ export default function FormCampaign({
 	campaign,
 	newsletter,
 	audienceCount,
-	isDomainVerified,
+	senderProblem,
 	isSendingEnabled,
 	testEmail,
 	sendTimes,
 	archiveUrlBase,
+	planProblem,
+	emailsLeft,
+	warmup,
+	newContacts,
 }) {
 	const isHtml = campaign.format === "html";
 	const [isDiscardOpen, setIsDiscardOpen] = useState(false);
@@ -52,10 +59,13 @@ export default function FormCampaign({
 		previewText: campaign.previewText,
 		body: initialBody,
 	});
-	const save = useCallback((snapshot) => saveCampaign(campaign._id, snapshot), [campaign._id]);
+	const save = useCallback((snapshot) => saveCampaign(campaign._id, { ...snapshot, format }), [campaign._id, format]);
 	const { isDirty, isSaving, error, flush } = useAutosave(values, save);
 	const [isTesting, startTesting] = useTransition();
 	const [isWorking, startWorking] = useTransition();
+	const toastError = useToastError();
+	const paywall = usePaywall();
+	const hasPlan = paywall?.hasPlan ?? true;
 	const deferredValues = useDeferredValue(values);
 	const isUploading = values.body.includes('src="blob:');
 
@@ -78,9 +88,12 @@ export default function FormCampaign({
 		campaign: { ...campaign, ...values },
 		newsletter,
 		rendered,
-		isDomainVerified,
+		senderProblem,
 		isSendingEnabled,
+		planProblem,
 	});
+	// Without a plan, Send and Schedule open the paywall first; the checks wait until there's one.
+	const blockingMessage = !hasPlan ? null : isUploading ? UPLOADING_MESSAGE : blocking[0]?.message;
 
 	async function persist() {
 		if (await flush()) return true;
@@ -89,11 +102,12 @@ export default function FormCampaign({
 	}
 
 	function sendTest() {
+		if (!hasPlan) return paywall.open("test");
 		startTesting(async () => {
 			if (isUploading) return void toast.error(UPLOADING_MESSAGE);
 			if (!(await persist())) return;
 			const result = await sendTestCampaign(campaign._id);
-			if (result?.error) toast.error(result.error);
+			if (result?.error) toastError(result);
 			else toast.success(`Test sent to ${testEmail}`);
 		});
 	}
@@ -153,8 +167,8 @@ export default function FormCampaign({
 				<StatusSave isSaving={isDirty || isSaving} error={error} onRetry={flush} />
 				<Tooltip>
 					<TooltipTrigger asChild>
-						<span tabIndex={isSendingEnabled ? -1 : 0} className="rounded-lg">
-							<Button variant="outline" onClick={sendTest} disabled={!isSendingEnabled || isTesting}>
+						<span tabIndex={isSendingEnabled || !hasPlan ? -1 : 0} className="rounded-lg">
+							<Button variant="outline" onClick={sendTest} disabled={(hasPlan && !isSendingEnabled) || isTesting}>
 								{isTesting ? (
 									<Loader2 data-icon="inline-start" className="animate-spin" />
 								) : (
@@ -164,27 +178,36 @@ export default function FormCampaign({
 							</Button>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent>{isSendingEnabled ? `Sends to ${testEmail}` : "Sending is off"}</TooltipContent>
+					<TooltipContent>{isSendingEnabled || !hasPlan ? `Sends to ${testEmail}` : "Sending is off"}</TooltipContent>
 				</Tooltip>
-				<DialogScheduleCampaign
-					campaignId={campaign._id}
-					scheduledAt={campaign.status === "scheduled" ? campaign.scheduledAt : null}
-					audienceLimit={campaign.audienceLimit}
-					audienceCount={audienceCount}
-					history={sendTimes.history}
-					taken={sendTimes.taken}
-					isCleanupEnabled={Boolean(newsletter.cleanup?.enabled)}
-					blockingMessage={isUploading ? UPLOADING_MESSAGE : blocking[0]?.message}
-					onBeforeSchedule={persist}
-				/>
-				<DialogSendCampaign
-					campaignId={campaign._id}
-					audienceCount={audienceCount}
-					scheduledAt={campaign.status === "scheduled" ? campaign.scheduledAt : null}
-					isCleanupEnabled={Boolean(newsletter.cleanup?.enabled)}
-					blockingMessage={isUploading ? UPLOADING_MESSAGE : blocking[0]?.message}
-					onBeforeSend={persist}
-				/>
+				<GatePlan reason="schedule">
+					<DialogScheduleCampaign
+						campaignId={campaign._id}
+						scheduledAt={campaign.status === "scheduled" ? campaign.scheduledAt : null}
+						audienceLimit={campaign.audienceLimit}
+						audienceCount={audienceCount}
+						history={sendTimes.history}
+						taken={sendTimes.taken}
+						isCleanupEnabled={Boolean(newsletter.cleanup?.enabled)}
+						warmup={warmup}
+						newContacts={newContacts}
+						blockingMessage={blockingMessage}
+						onBeforeSchedule={persist}
+					/>
+				</GatePlan>
+				<GatePlan reason="send">
+					<DialogSendCampaign
+						campaignId={campaign._id}
+						audienceCount={audienceCount}
+						emailsLeft={emailsLeft}
+						scheduledAt={campaign.status === "scheduled" ? campaign.scheduledAt : null}
+						isCleanupEnabled={Boolean(newsletter.cleanup?.enabled)}
+						warmup={warmup}
+						newContacts={newContacts}
+						blockingMessage={blockingMessage}
+						onBeforeSend={persist}
+					/>
+				</GatePlan>
 				<DropdownMenu>
 					<DropdownMenuTrigger asChild>
 						<Button variant="ghost" size="icon" aria-label="More" disabled={isWorking}>
@@ -212,7 +235,7 @@ export default function FormCampaign({
 				/>
 			</HeaderPage>
 
-			<div className="grid gap-4 lg:grid-cols-2 lg:items-start">
+			<div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
 				<div className="overflow-hidden rounded-xl bg-card shadow-border animate-enter">
 					<Row label="From">
 						<span className="truncate text-sm">{from}</span>
@@ -276,7 +299,7 @@ export default function FormCampaign({
 
 				<div
 					style={{ "--stagger": 1 }}
-					className="flex flex-col gap-4 animate-enter lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)]"
+					className="flex flex-col gap-4 animate-enter lg:sticky lg:top-[calc(var(--plan-bar-height)+1.5rem)] lg:h-[calc(100dvh-var(--plan-bar-height)-3rem)]"
 				>
 					<ListChecks checks={checks} />
 					<PreviewEmail

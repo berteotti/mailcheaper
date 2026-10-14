@@ -3,13 +3,16 @@ import { test } from "node:test";
 import {
 	LAST_CHANCE_DAYS,
 	addToPreview,
+	cleanupTotalsQuery,
 	emptyPreview,
 	getCleanupAction,
 	getCleanupSettings,
 	getLastSignOfLife,
 	splitAudience,
 	summarizePreview,
+	withEngagement,
 } from "../lib/cleanup.js";
+import { accountId, database, newsletterId, seedNewsletter } from "./helpers/d1.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse("2027-06-01T12:00:00Z");
@@ -23,7 +26,7 @@ function contact(id, fields = {}) {
 	return { _id: id, email: `${id}@example.com`, subscribedAt: daysAgo(400), ...fields };
 }
 
-test("cleanup is off by default, and saved numbers win over the defaults", () => {
+test("a newsletter saved without cleanup has it off, and saved numbers win over the defaults", () => {
 	assert.deepEqual(getCleanupSettings({ slug: "weekly" }), { enabled: false, issues: 6, days: 180 });
 	assert.deepEqual(getCleanupSettings({ slug: "weekly", cleanup: { enabled: true, issues: 8, days: 60 } }), {
 		enabled: true,
@@ -159,3 +162,28 @@ test("the send dialog's counts match what the send does, at any limit", () => {
 	assert.deepEqual(chunked, preview);
 });
 
+
+test("the settings totals count, in SQL, who is waiting, who answered and who went dormant", async (t) => {
+	const db = database(t);
+	seedNewsletter(db);
+	const insert = db.sqlite.prepare(`INSERT INTO contacts (_id, accountId, newsletterId, email, status, subscribedAt, lastChanceAt, lastOpenAt,
+		createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`);
+	const rows = [
+		["waiting", "active", daysAgo(5), null],
+		["kept", "active", daysAgo(5), daysAgo(2)],
+		["asleep", "dormant", daysAgo(30), null],
+		["never-asked", "active", null, null],
+	];
+	rows.forEach(([name, status, lastChanceAt, lastOpenAt], index) => {
+		insert.run(String(index).padStart(24, "0"), accountId, newsletterId, `${name}@example.com`, status, daysAgo(400).getTime(),
+			lastChanceAt?.getTime() ?? null, lastOpenAt?.getTime() ?? null);
+	});
+	const { sql, params } = cleanupTotalsQuery({ accountId, newsletterId });
+	assert.deepEqual({ ...db.sqlite.prepare(sql).get(...params) }, { waiting: 1, kept: 1, dormant: 1 });
+	const other = cleanupTotalsQuery({ accountId: "74f1a2b3c4d5e6f7a8b9c0ff", newsletterId });
+	assert.deepEqual({ ...db.sqlite.prepare(other.sql).get(...other.params) }, { waiting: 0, kept: 0, dormant: 0 });
+
+	const engagement = withEngagement(new Date(NOW));
+	db.sqlite.prepare(`UPDATE contacts SET ${engagement.sql}`).run(...engagement.params.map((at) => at.getTime()));
+	assert.deepEqual({ ...db.sqlite.prepare(sql).get(...params) }, { waiting: 0, kept: 2, dormant: 1 }, "any sign of life answers");
+});

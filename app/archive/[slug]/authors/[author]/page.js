@@ -33,7 +33,7 @@ export default async function AuthorPage({ params }) {
 	if (!page) notFound();
 	const { newsletter, author } = page;
 
-	const issues = await listArchiveIssues(newsletter._id);
+	const issues = await listArchiveIssues(newsletter);
 	const urls = getArchiveUrls(newsletter);
 	const firstName = author.name.split(" ")[0];
 

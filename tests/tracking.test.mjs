@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getTrackingPlan } from "../lib/ses-event-mapping.js";
+import { getTrackingPlan } from "../lib/email-event-rules.js";
 import { buildRecipientEmail } from "../lib/sending-rules.js";
 import { addTracking, getClickUrl, getOpenUrl, isLikelyScanner, readClickToken, readOpenToken } from "../lib/tracking.js";
 
-process.env.SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
+process.env.BETTER_AUTH_SECRET = "test-session-secret-with-at-least-32-characters";
 process.env.APP_URL = "https://mail.example.com";
 
 const BASE = "https://mail.example.com";
@@ -30,7 +30,7 @@ test("open and click links carry the message and can't be forged", () => {
 	assert.equal(readClickToken("not-a-token"), null);
 });
 
-test("links go through Mailcheap except unsubscribe links, and the pixel comes first", () => {
+test("links go through MailCheap except unsubscribe links, and the pixel comes first", () => {
 	const html = [
 		'<html><body style="margin:0"><p><a href="https://example.org/?a=1&amp;b=2">Example</a>',
 		"<a href='https://x.com/example'>X</a>",

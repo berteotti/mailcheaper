@@ -1,12 +1,30 @@
+import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse } from "next/server";
-import { getArchiveHostUrl, getArchiveSlugForHost } from "@/lib/archive-hosts";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/session-token";
+import { getArchiveHostUrl } from "@/lib/archive-hosts";
+import { isCloud } from "@/lib/config";
+import { resolveArchiveHost } from "@/lib/host-routing";
+import { siteExtensions } from "@/lib/site-extensions";
 
-// Reachable without a session: recipients, mail providers, AWS, API-key clients, and the jobs Worker
-// (its internal routes check their own key).
+// No route can live under an underscore folder, so this always renders the not-found page with a 404.
+const NOT_FOUND_PATH = "/_not-on-this-server";
+
+// Reachable without a session: recipients, mail providers, AWS, Stripe, API-key and OAuth clients (REST and
+// MCP, OAuth discovery), the docs, uploads served by the app (/media), uptime checks and the jobs Worker (its
+// internal routes check their own key). The consent page checks the session itself, so a signed-out visitor
+// goes to sign-in with the app's request.
 const PUBLIC_PATHS = [
+	/^\/api\/health$/,
 	/^\/favicon\.ico$/,
-	/^\/login$/,
+	/^\/(robots\.txt|sitemap\.xml)$/,
+	/^\/opengraph-image(-\w+)?$/,
+	/^\/signin$/,
+	/^\/oauth\/consent$/,
+	/^\/\.well-known\/(oauth-protected-resource(\/mcp)?|oauth-authorization-server|openid-configuration)$/,
+	/^\/docs(\/.*)?$/,
+	/^\/llms(-full)?\.txt$/,
+	/^\/mcp$/,
+	/^\/api\/mcp$/,
+	/^\/api\/auth\//,
 	/^\/unsubscribe$/,
 	/^\/confirm$/,
 	/^\/keep$/,
@@ -22,8 +40,16 @@ const PUBLIC_PATHS = [
 	/^\/api\/internal\//,
 ];
 
-// A public archive domain never exposes the dashboard, not even its login page.
-const ARCHIVE_HOST_PATHS = [/^\/unsubscribe$/, /^\/api\/unsubscribe$/, /^\/api\/views$/];
+// A newsletter's host carries its archive and the links in its emails, never the dashboard, not even its login page.
+const ARCHIVE_HOST_PATHS = [
+	/^\/unsubscribe$/,
+	/^\/api\/unsubscribe$/,
+	/^\/api\/views$/,
+	/^\/confirm$/,
+	/^\/keep$/,
+	/^\/o\//,
+	/^\/c\//,
+];
 const ISSUE_PATH_PATTERN = /^\/p\/([a-z0-9][a-z0-9-]{0,119})\/?$/;
 const AUTHOR_PATH_PATTERN = /^\/authors\/([a-z0-9][a-z0-9-]{0,59})\/?$/;
 // Generated share images stay on the app domain, where social cards point: they're only PNGs.
@@ -38,8 +64,10 @@ function rewriteTo(request, pathname) {
 export async function proxy(request) {
 	const { pathname } = request.nextUrl;
 
-	const archiveSlug = getArchiveSlugForHost(request.headers.get("host"));
-	if (archiveSlug) {
+	const { isArchiveHost, slug: archiveSlug } = await resolveArchiveHost(request.headers.get("host"));
+	if (isArchiveHost) {
+		if (ARCHIVE_HOST_PATHS.some((pattern) => pattern.test(pathname))) return NextResponse.next();
+		if (!archiveSlug) return new NextResponse("Not found", { status: 404 });
 		if (pathname === "/") return rewriteTo(request, `/archive/${archiveSlug}`);
 		if (pathname === "/sitemap.xml") return rewriteTo(request, `/archive/${archiveSlug}/sitemap`);
 		if (pathname === "/robots.txt") return rewriteTo(request, `/archive/${archiveSlug}/robots`);
@@ -47,29 +75,39 @@ export async function proxy(request) {
 		if (issueSlug) return rewriteTo(request, `/archive/${archiveSlug}/p/${issueSlug}`);
 		const authorSlug = AUTHOR_PATH_PATTERN.exec(pathname)?.[1];
 		if (authorSlug) return rewriteTo(request, `/archive/${archiveSlug}/authors/${authorSlug}`);
-		if (ARCHIVE_HOST_PATHS.some((pattern) => pattern.test(pathname))) return NextResponse.next();
 		return new NextResponse("Not found", { status: 404 });
 	}
 
-	// Issues carry HTML from the API and the editor. A newsletter with its own domain is read there, so that
-	// HTML never shares the dashboard's origin; without one, the sanitizer, the frame's sandbox and the CSP
-	// guard it here. Local dev keeps every archive under /archive.
+	// Issues carry HTML from the API and the editor. They're read on the newsletter's host, so that HTML never
+	// shares the dashboard's origin. Without SHARED_DOMAIN (local dev) every archive stays under /archive, where
+	// the sanitizer, the frame's sandbox and the CSP guard it.
 	if (pathname.startsWith("/archive/") && process.env.NODE_ENV === "production" && !ARCHIVE_IMAGE_PATH_PATTERN.test(pathname)) {
 		const archiveUrl = getArchiveHostUrl(pathname, request.nextUrl.search);
 		if (archiveUrl) return NextResponse.redirect(archiveUrl, 308);
 	}
 
+	// Only whether a session cookie is there: pages, actions and routes check the session itself.
+	const hasSession = Boolean(getSessionCookie(request));
+	// MailCheap Cloud's marketing site (site extensions): its landing page shows at / to signed-out visitors, rendered
+	// at landingPath, which never shows in the address bar. A self-hosted server has none of its pages.
+	const { landingPath, publicPages, isPublicPath } = siteExtensions;
+	if (isCloud()) {
+		if (pathname === "/" && landingPath) return hasSession ? NextResponse.next() : rewriteTo(request, landingPath);
+		if (pathname === landingPath) return NextResponse.redirect(new URL("/", request.url), 308);
+		if (publicPages.includes(pathname) || isPublicPath(pathname)) return NextResponse.next();
+	} else if (pathname === landingPath || (pathname !== "/" && publicPages.includes(pathname))) {
+		return rewriteTo(request, NOT_FOUND_PATH);
+	}
 	if (PUBLIC_PATHS.some((pattern) => pattern.test(pathname))) return NextResponse.next();
-
-	const session = await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
-	if (session) return NextResponse.next();
+	if (hasSession) return NextResponse.next();
+	if (pathname === "/") return NextResponse.redirect(new URL("/signin", request.url));
 
 	if (pathname.startsWith("/api/")) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
-	const login = new URL("/login", request.url);
-	if (pathname !== "/") login.searchParams.set("next", pathname);
-	return NextResponse.redirect(login);
+	const signin = new URL("/signin", request.url);
+	signin.searchParams.set("next", `${pathname}${request.nextUrl.search}`);
+	return NextResponse.redirect(signin);
 }
 
 // favicon.ico goes through the proxy so archive domains answer 404 and browsers keep the newsletter's logo.

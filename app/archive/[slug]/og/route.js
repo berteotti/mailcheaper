@@ -5,9 +5,8 @@ import { countReaders, getArchiveIssue, getArchiveNewsletter } from "@/lib/archi
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { getIssueDate } from "@/lib/archive-issues";
 import { SHARE_IMAGE_SIZE } from "@/lib/archive-seo";
-import { getAppUrl } from "@/lib/config";
-import { getBindings } from "@/lib/db";
 import { formatDate, formatNumber } from "@/lib/format";
+import { readLogo } from "@/lib/og-image";
 
 // Bundled into the Worker as data URLs: a deployed Worker has no project checkout to read files from.
 const fromDataUrl = (url) => Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
@@ -17,29 +16,6 @@ const FONTS = [
 	{ name: "Geist", data: geistSemiBold, weight: 600, style: "normal" },
 ];
 const COLORS = { foreground: "#0a0a0a", muted: "#737373", border: "#e5e5e5" };
-
-// Local paths are files in public/, read through the Worker's static assets binding.
-async function loadImage(url) {
-	const { ASSETS } = await getBindings();
-	const isLocal = url.startsWith("/") && !url.startsWith("//");
-	if (isLocal && !ASSETS) return null;
-	const response = isLocal
-		? ASSETS.fetch(new URL(url, "https://assets.local"))
-		: fetch(url, { signal: AbortSignal.timeout(5000) });
-	const buffer = await response
-		.then((result) => (result.ok ? result.arrayBuffer() : null))
-		.then((data) => data && Buffer.from(data))
-		.catch(() => null);
-	if (!buffer) return null;
-	const type = buffer[0] === 0x89 && buffer[1] === 0x50 ? "png" : buffer[0] === 0xff && buffer[1] === 0xd8 ? "jpeg" : null;
-	return type && `data:image/${type};base64,${buffer.toString("base64")}`;
-}
-
-// The card renderer can't decode WebP, so a WebP logo uses the PNG saved next to it.
-async function readLogo(imageUrl) {
-	if (!imageUrl) return null;
-	return (await loadImage(imageUrl.replace(/\.webp$/i, ".png"))) ?? loadImage(imageUrl);
-}
 
 // Each issue gets its own soft tint, so archive cards stand out from the page and a row of them
 // doesn't look like one card repeated.
@@ -56,11 +32,11 @@ export async function GET(request, { params }) {
 	if (!newsletter) return new Response("Not found", { status: 404 });
 
 	const postSlug = new URL(request.url).searchParams.get("p");
-	const issue = postSlug ? await getArchiveIssue(newsletter._id.toString(), postSlug) : null;
+	const issue = postSlug ? await getArchiveIssue(newsletter, postSlug) : null;
 	if (postSlug && !issue) return new Response("Not found", { status: 404 });
 
-	const [logo, readers] = await Promise.all([readLogo(newsletter.imageUrl), countReaders(newsletter._id.toString())]);
-	const domain = new URL(getArchiveUrls(newsletter, undefined, getAppUrl()).siteIndex).host;
+	const [logo, readers] = await Promise.all([readLogo(newsletter.imageUrl), countReaders(newsletter)]);
+	const domain = new URL(getArchiveUrls(newsletter).siteIndex).host;
 	const footer = issue ? formatDate(getIssueDate(issue)) : readers >= 100 ? `Join ${formatNumber(readers)} readers` : "";
 
 	return new ImageResponse(

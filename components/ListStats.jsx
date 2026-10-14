@@ -34,12 +34,12 @@ export default function ListStats({ current, previous }) {
 		{
 			label: "Bounced",
 			...rate("bounced", current.sent, previous.sent, 2),
-			tone: rateTone(current.bounced, current.sent, LIMITS.bounceRate),
+			tone: rateTone(current.bounced, current.sent, LIMITS.pause.bounceRate),
 		},
 		{
 			label: "Complaints",
 			...rate("complained", current.sent, previous.sent, 3),
-			tone: rateTone(current.complained, current.sent, LIMITS.complaintRate),
+			tone: rateTone(current.complained, current.sent, LIMITS.pause.complaintRate),
 		},
 	];
 

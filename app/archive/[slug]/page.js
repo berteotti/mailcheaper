@@ -25,8 +25,8 @@ export default async function ArchivePage({ params }) {
 	if (!newsletter) notFound();
 
 	const [issues, readers] = await Promise.all([
-		listArchiveIssues(newsletter._id),
-		countReaders(newsletter._id.toString()),
+		listArchiveIssues(newsletter),
+		countReaders(newsletter),
 	]);
 	const urls = getArchiveUrls(newsletter);
 	const pinned = issues.filter((issue) => issue.archivePinned);

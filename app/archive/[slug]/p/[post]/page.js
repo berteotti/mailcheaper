@@ -26,7 +26,7 @@ export function generateStaticParams() {
 async function getIssuePage(params) {
 	const { slug, post } = await params;
 	const newsletter = await getArchiveNewsletter(slug);
-	const issue = newsletter && (await getArchiveIssue(newsletter._id.toString(), post));
+	const issue = newsletter && (await getArchiveIssue(newsletter, post));
 	return issue ? { newsletter, issue } : null;
 }
 
@@ -41,8 +41,8 @@ export default async function IssuePage({ params }) {
 	const { newsletter, issue } = page;
 
 	const [more, readers] = await Promise.all([
-		listArchiveIssues(newsletter._id, { limit: 3, excludeId: issue._id }),
-		countReaders(newsletter._id.toString()),
+		listArchiveIssues(newsletter, { limit: 3, excludeId: issue._id }),
+		countReaders(newsletter),
 	]);
 	const urls = getArchiveUrls(newsletter);
 	const body = renderIssueBody(issue);

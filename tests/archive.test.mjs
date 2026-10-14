@@ -1,39 +1,44 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getArchiveHostUrl, getArchiveSlugForHost, getArchiveUrls, parseArchiveHosts } from "../lib/archive-hosts.js";
+import { getArchiveHostUrl, getArchiveUrls, getLinkBaseUrl, getNewsletterHost, getSlugForSharedHost } from "../lib/archive-hosts.js";
 import { getFeedbackId } from "../lib/sending-rules.js";
 import { getShareLinks, getSocialPlatform, parseSocialLinks } from "../lib/social.js";
 
-test("app-domain archive paths move to the newsletter's own domain when it has one", () => {
-	const value = "news.example.com=weekly,letters.example.org=monthly";
+test("app-domain archive paths move to the newsletter's shared subdomain", () => {
+	const shared = "mailcheapmail.com";
 	const cases = [
-		["/archive/weekly", "", "https://news.example.com/"],
-		["/archive/weekly/", "", "https://news.example.com/"],
-		["/archive/weekly/p/my-issue", "?ref=x", "https://news.example.com/p/my-issue?ref=x"],
-		["/archive/monthly/authors/jane-doe", "", "https://letters.example.org/authors/jane-doe"],
-		["/archive/monthly/sitemap", "", "https://letters.example.org/sitemap.xml"],
-		["/archive/monthly/robots", "", "https://letters.example.org/robots.txt"],
+		["/archive/weekly", "", "https://weekly.mailcheapmail.com/"],
+		["/archive/weekly/", "", "https://weekly.mailcheapmail.com/"],
+		["/archive/weekly/p/my-issue", "?ref=x", "https://weekly.mailcheapmail.com/p/my-issue?ref=x"],
+		["/archive/monthly/authors/jane-doe", "", "https://monthly.mailcheapmail.com/authors/jane-doe"],
+		["/archive/monthly/sitemap", "", "https://monthly.mailcheapmail.com/sitemap.xml"],
+		["/archive/monthly/robots", "", "https://monthly.mailcheapmail.com/robots.txt"],
 	];
-	for (const [pathname, search, expected] of cases) assert.equal(getArchiveHostUrl(pathname, search, value), expected, pathname);
-	assert.equal(getArchiveHostUrl("/archive/no-domain/p/x", "", value), null, "no domain: the archive stays on the app");
-	assert.equal(getArchiveHostUrl("/archive/weekly/p/x", "", ""), null);
-	assert.equal(getArchiveHostUrl("/campaigns", "", value), null);
+	for (const [pathname, search, expected] of cases) assert.equal(getArchiveHostUrl(pathname, search, shared), expected, pathname);
+	assert.equal(getArchiveHostUrl("/archive/weekly/p/x", "", null), null, "without SHARED_DOMAIN the archive stays on the app");
+	assert.equal(getArchiveHostUrl("/campaigns", "", shared), null);
 });
 
-test("archive hosts map domains to newsletter slugs", () => {
-	const value = " news.example.com = weekly ,bad, letters.example.org=Monthly";
-	assert.deepEqual([...parseArchiveHosts(value)], [
-		["news.example.com", "weekly"],
-		["letters.example.org", "monthly"],
-	]);
-	assert.equal(getArchiveSlugForHost("News.Example.com:443", value), "weekly");
-	assert.equal(getArchiveSlugForHost("mailcheap.example.com", value), null);
-	assert.equal(getArchiveSlugForHost(null, ""), null);
+test("shared subdomains map to newsletter slugs, one label deep", () => {
+	const shared = "mailcheapmail.com";
+	assert.equal(getSlugForSharedHost("Weekly.Mailcheapmail.com:443", shared), "weekly");
+	assert.equal(getSlugForSharedHost("a.b.mailcheapmail.com", shared), null);
+	assert.equal(getSlugForSharedHost("mailcheapmail.com", shared), null);
+	assert.equal(getSlugForSharedHost("weekly.example.com", shared), null);
+	assert.equal(getSlugForSharedHost("weekly.mailcheapmail.com", null), null);
 });
 
-test("archive links use the newsletter's domain once it routes here", () => {
-	const value = "news.example.com=weekly";
-	const own = getArchiveUrls({ slug: "weekly" }, value, "https://app.test");
+test("a newsletter's host is its verified archive subdomain, else its shared subdomain, else the app", () => {
+	const shared = "mailcheapmail.com";
+	assert.equal(getNewsletterHost({ slug: "weekly", archiveHost: "news.example.com" }, shared), "news.example.com");
+	assert.equal(getNewsletterHost({ slug: "weekly" }, shared), "weekly.mailcheapmail.com");
+	assert.equal(getNewsletterHost({ slug: "weekly" }, null), null);
+	assert.equal(getLinkBaseUrl({ slug: "weekly" }, { sharedDomain: shared, appUrl: "https://app.test" }), "https://weekly.mailcheapmail.com");
+	assert.equal(getLinkBaseUrl({ slug: "weekly" }, { sharedDomain: null, appUrl: "https://app.test" }), "https://app.test");
+});
+
+test("archive links use the newsletter's host", () => {
+	const own = getArchiveUrls({ slug: "weekly", archiveHost: "news.example.com" }, { sharedDomain: null, appUrl: "https://app.test" });
 	assert.equal(own.host, "news.example.com");
 	assert.equal(own.index, "https://news.example.com/");
 	assert.equal(own.siteIndex, "https://news.example.com/");
@@ -42,7 +47,7 @@ test("archive links use the newsletter's domain once it routes here", () => {
 	assert.equal(own.author("jane-doe"), "https://news.example.com/authors/jane-doe");
 	assert.equal(own.absoluteAuthor("jane-doe"), "https://news.example.com/authors/jane-doe");
 
-	const app = getArchiveUrls({ slug: "monthly" }, value, "https://app.test");
+	const app = getArchiveUrls({ slug: "monthly" }, { sharedDomain: null, appUrl: "https://app.test" });
 	assert.equal(app.host, null);
 	assert.equal(app.index, "/archive/monthly");
 	assert.equal(app.post("issue-2"), "/archive/monthly/p/issue-2");

@@ -1,8 +1,8 @@
 import { CircleAlert, Link2Off, MailCheck, MailX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getOne } from "@/lib/db";
+import { findNewsletterAnywhere } from "@/lib/public-newsletters";
 import { verifyUnsubscribeToken } from "@/lib/unsubscribe";
-import { findNewsletter } from "@/lib/newsletter-data";
 
 // The URL carries the unsubscribe token: keep it out of search results and referrer headers.
 export const metadata = {
@@ -48,10 +48,14 @@ export default async function UnsubscribePage({ searchParams }) {
 
 async function getSubscription({ contactId, newsletterId }) {
 	try {
-		const [newsletter, contact] = await Promise.all([
-			findNewsletter(newsletterId),
-			getOne("SELECT status FROM contacts WHERE _id = ? AND newsletterId = ?", [contactId, newsletterId]),
-		]);
+		const newsletter = await findNewsletterAnywhere({ _id: newsletterId });
+		const contact =
+			newsletter &&
+			(await getOne("SELECT status FROM contacts WHERE accountId = ? AND _id = ? AND newsletterId = ?", [
+				newsletter.accountId,
+				contactId,
+				newsletterId,
+			]));
 		return {
 			newsletterName: newsletter?.name,
 			isSubscribed: !contact || SUBSCRIBED_STATUSES.includes(contact.status),

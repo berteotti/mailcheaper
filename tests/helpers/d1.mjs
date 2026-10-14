@@ -1,24 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { registerHooks } from "node:module";
+import { readFileSync, readdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath, pathToFileURL } from "node:url";
 import { env } from "./bindings.mjs";
 
 const root = new URL("../../", import.meta.url);
-registerHooks({
-	resolve(specifier, context, nextResolve) {
-		if (specifier === "server-only") return { url: "data:text/javascript,", shortCircuit: true };
-		if (specifier === "cloudflare:workers") return { url: new URL("./bindings.mjs", import.meta.url).href, shortCircuit: true };
-		if (specifier.startsWith("@/")) {
-			const path = fileURLToPath(new URL(specifier.slice(2), root));
-			return nextResolve(pathToFileURL(existsSync(path) ? path : path + ".js").href, context);
-		}
-		return nextResolve(specifier, context);
-	},
-});
 
-export function database(t) {
+// An in-memory D1 with every migration applied, bound as env.DB until it's closed.
+export function createDatabase() {
 	const sqlite = new DatabaseSync(":memory:");
 	sqlite.exec("PRAGMA foreign_keys = ON");
 	const dir = new URL("migrations/", root);
@@ -26,6 +14,10 @@ export function database(t) {
 	const db = {
 		sqlite,
 		maxBoundParameters: 0,
+		async exec(sql) {
+			sqlite.exec(sql);
+			return { count: 1, duration: 0 };
+		},
 		prepare(sql) {
 			const prepared = sqlite.prepare(sql);
 			let params = [];
@@ -59,15 +51,32 @@ export function database(t) {
 		},
 	};
 	env.DB = db;
-	t.after(() => { sqlite.close(); if (env.DB === db) delete env.DB; });
+	db.close = () => { sqlite.close(); if (env.DB === db) delete env.DB; };
 	return db;
 }
 
+export function database(t) {
+	const db = createDatabase();
+	t.after(() => db.close());
+	return db;
+}
+
+export const accountId = "74f1a2b3c4d5e6f7a8b9c0d1";
 export const newsletterId = "74f1a2b3c4d5e6f7a8b9c0d2";
+
+export function seedAccount(db, values = {}) {
+	const now = Date.parse("2026-10-14T12:00:00Z");
+	const id = values._id ?? accountId;
+	db.sqlite.prepare("INSERT OR IGNORE INTO accounts (_id, ownerId, plan, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)")
+		.run(id, values.ownerId ?? `user-${id}`, values.plan ?? "starter", now, now);
+	return db.sqlite.prepare("SELECT * FROM accounts WHERE _id = ?").get(id);
+}
+
 export function seedNewsletter(db, values = {}) {
 	const now = Date.parse("2026-10-14T12:00:00Z");
-	db.sqlite.prepare("INSERT INTO newsletters (_id, name, slug, fromEmail, requireConfirmation, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)")
-		.run(values._id ?? newsletterId, values.name ?? "Weekly", values.slug ?? "weekly", values.fromEmail ?? "hello@example.com",
+	const account = values.accountId ?? seedAccount(db)._id;
+	db.sqlite.prepare("INSERT INTO newsletters (_id, accountId, name, slug, fromEmail, requireConfirmation, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+		.run(values._id ?? newsletterId, account, values.name ?? "Weekly", values.slug ?? "weekly", values.fromEmail ?? "hello@example.com",
 			Number(values.requireConfirmation ?? false), now, now);
 	return db.sqlite.prepare("SELECT * FROM newsletters WHERE _id = ?").get(values._id ?? newsletterId);
 }

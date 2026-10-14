@@ -6,7 +6,7 @@ import {
 	buildRecipientEmail,
 	chunk,
 	formatFromAddress,
-	getCampaignPauseReason,
+	getCampaignRateProblem,
 	getIssueWebUrl,
 	getNextStepLimit,
 	getSendErrorAction,
@@ -15,7 +15,7 @@ import {
 } from "../lib/sending-rules.js";
 import { verifyUnsubscribeToken } from "../lib/unsubscribe.js";
 
-process.env.SESSION_SECRET = "test-session-secret-with-at-least-32-characters";
+process.env.BETTER_AUTH_SECRET = "test-session-secret-with-at-least-32-characters";
 process.env.APP_URL = "https://mail.example.com";
 
 const newsletter = {
@@ -124,17 +124,17 @@ test("from names are quoted, encoded, and can't inject headers", () => {
 	);
 });
 
-test("campaigns pause above the bounce or complaint limit once 100 are sent", () => {
-	assert.equal(LIMITS.bounceRate, 0.02);
-	assert.equal(LIMITS.complaintRate, 0.0008);
+test("a campaign pauses over the pause level and blocks its account over the block level", () => {
+	assert.equal(LIMITS.pause.bounceRate, 0.02);
+	assert.equal(LIMITS.block.complaintRate, 0.003);
 
-	assert.equal(getCampaignPauseReason(), null);
-	assert.equal(getCampaignPauseReason({ sent: 99, bounced: 50, complained: 10 }), null);
-	assert.equal(getCampaignPauseReason({ sent: 100, bounced: 2 }), null);
-	assert.equal(getCampaignPauseReason({ sent: 100, bounced: 3 }), "bounce rate");
-	assert.equal(getCampaignPauseReason({ sent: 1250, complained: 1 }), null);
-	assert.equal(getCampaignPauseReason({ sent: 1000, complained: 1 }), "complaint rate");
-	assert.equal(getCampaignPauseReason({ sent: 5000, bounced: 99, complained: 4 }), null);
+	assert.equal(getCampaignRateProblem(), null);
+	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 4, complained: 1 }), null);
+	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 5 }).level, "pause");
+	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 10 }).level, "block");
+	assert.equal(getCampaignRateProblem({ sent: 1000, complained: 1 }), null, "one complaint never pauses");
+	assert.equal(getCampaignRateProblem({ sent: 5000, bounced: 99, complained: 4 }), null);
+	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 10 }).reason, "Bounce rate of 10.00% on a campaign (limit 5.00%)");
 });
 
 test("SES errors map to retry later, pause the campaign, or fail one message", () => {
@@ -160,6 +160,10 @@ test("send problems block incomplete or oversized emails", () => {
 	assert.equal(
 		getSendProblem({ campaign, newsletter: { ...newsletter, fromEmail: "" } }),
 		"Add a from email to the newsletter"
+	);
+	assert.equal(
+		getSendProblem({ campaign, newsletter: { ...newsletter, postalAddress: " " } }),
+		"Add a postal address to the newsletter"
 	);
 	assert.equal(getSendProblem({ campaign: { ...campaign, subject: "  " }, newsletter }), "Add a subject");
 	assert.equal(getSendProblem({ campaign: { ...campaign, markdown: "" }, newsletter }), "Add content");

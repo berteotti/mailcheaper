@@ -9,7 +9,7 @@ export default async function ArchiveLayout({ children, params }) {
 	const newsletter = await getArchiveNewsletter((await params).slug);
 	if (!newsletter) notFound();
 
-	const readers = await countReaders(newsletter._id.toString());
+	const readers = await countReaders(newsletter);
 	const { index } = getArchiveUrls(newsletter);
 	const pitch = {
 		name: newsletter.name,

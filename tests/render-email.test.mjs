@@ -98,7 +98,7 @@ test("presend checks block on missing essentials and sending off", () => {
 		campaign,
 		newsletter: {},
 		rendered,
-		isDomainVerified: false,
+		senderProblem: "example.com isn't verified yet",
 		isSendingEnabled: false,
 	});
 	assert.deepEqual(
@@ -114,7 +114,7 @@ test("presend checks pass when everything is ready", () => {
 		campaign,
 		newsletter,
 		rendered,
-		isDomainVerified: true,
+		senderProblem: null,
 		isSendingEnabled: true,
 	});
 	assert.equal(blocking.length, 0);

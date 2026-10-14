@@ -18,9 +18,13 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/components/ui/dialog";
+import NoticeFirstSend from "@/components/NoticeFirstSend";
+import NoticeWarmup from "@/components/NoticeWarmup";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { FIRST_SEND } from "@/lib/first-send";
 import { formatCount, formatSendTime } from "@/lib/format";
 import { getScheduleProblem, getScheduleSuggestions } from "@/lib/schedule";
+import { useToastError } from "@/lib/use-toast-error";
 import { useIsClient } from "@/lib/use-is-client";
 
 const FALLBACK_MINUTES = 9 * 60;
@@ -33,10 +37,13 @@ export default function DialogScheduleCampaign({
 	history,
 	taken,
 	isCleanupEnabled,
+	warmup,
+	newContacts = 0,
 	blockingMessage,
 	onBeforeSchedule,
 }) {
 	const router = useRouter();
+	const toastError = useToastError();
 	const isClient = useIsClient();
 	const [isOpen, setIsOpen] = useState(false);
 	const [value, setValue] = useState(null);
@@ -64,7 +71,7 @@ export default function DialogScheduleCampaign({
 				scheduledAt: value.toISOString(),
 				audienceLimit: Number.parseInt(limit, 10) || undefined,
 			});
-			if (result?.error) return toast.error(result.error);
+			if (result?.error) return toastError(result);
 			setIsOpen(false);
 			toast.success(`Scheduled for ${formatSendTime(value)}`);
 			router.refresh();
@@ -113,6 +120,8 @@ export default function DialogScheduleCampaign({
 						{isCleanupEnabled && " The list cleanup runs when it goes out, so cold contacts get the last-chance email instead."}
 					</DialogDescription>
 				</DialogHeader>
+				{warmup && <NoticeWarmup warmup={warmup} />}
+				{newContacts > FIRST_SEND.minSlice && <NoticeFirstSend count={newContacts} />}
 				{value && (
 					<>
 						<PickerSendTime value={value} onChange={setValue} suggestions={suggestions} history={history} />

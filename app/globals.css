@@ -10,8 +10,11 @@
   --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
   --font-heading: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-newsreader), "Iowan Old Style", Georgia, serif;
+  --color-site: var(--site);
   --shadow-border: var(--surface-shadow);
   --shadow-border-hover: var(--surface-shadow-hover);
+  --shadow-float: var(--surface-shadow), 0 8px 24px -6px rgb(0 0 0 / 0.14);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -87,11 +90,13 @@
     0px 2px 4px 0px rgba(0, 0, 0, 0.04);
   --surface-shadow-hover: 0px 0px 0px 1px rgba(0, 0, 0, 0.08), 0px 1px 2px -1px rgba(0, 0, 0, 0.08),
     0px 2px 4px 0px rgba(0, 0, 0, 0.06);
+  --site: oklch(0.985 0 0);
 }
 
 .dark {
   --surface-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
   --surface-shadow-hover: 0 0 0 1px rgba(255, 255, 255, 0.13);
+  --site: oklch(0.16 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -155,6 +160,43 @@
   }
 }
 
+/* Dashboard: toasts stack above the get-started panel, whose height ShellGetStarted keeps in
+   --get-started-height, and above a save bar. Sonner adds its own rules at runtime, hence html in front. */
+html [data-sonner-toaster][data-y-position="bottom"] {
+  margin-bottom: var(--save-bar-height, 0);
+  translate: 0 calc(-1 * (var(--get-started-height) + 0.75rem));
+  transition:
+    transform 400ms ease,
+    translate 200ms cubic-bezier(0.23, 1, 0.32, 1);
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+  }
+}
+
+/* A save bar holds the bottom of the screen, even at the end of the page (FormNewsletter's): the toasts and the
+   get-started panel sit above it. */
+html:has([data-save-bar]) {
+  --save-bar-height: 3.75rem;
+}
+
+/* An account without a plan has BannerPlan across the top of the dashboard: what sticks to the top of the screen
+   sits below it. calc() needs a length, hence 0px without the bar. */
+html {
+  --plan-bar-height: 0px;
+}
+
+html:has([data-plan-bar]) {
+  --plan-bar-height: 2.5rem;
+}
+
+/* BannerBlocked's reason takes two lines on phones. */
+@media (width < 48rem) {
+  html:has([data-blocked-bar]) {
+    --plan-bar-height: 3.5rem;
+  }
+}
+
 @keyframes enter {
   from {
     opacity: 0;
@@ -177,6 +219,22 @@
   @media (prefers-reduced-motion: reduce) {
     animation: none;
   }
+}
+
+/* StatusSaved: in, then out on its own. Only opacity, so it also runs without motion. */
+@keyframes saved {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  5%,
+  80% {
+    opacity: 1;
+  }
+}
+
+@utility animate-saved {
+  animation: saved 3s ease both;
 }
 
 @utility animate-enter {
@@ -211,6 +269,66 @@
   );
   background-size: 22px 22px;
   mask-image: radial-gradient(ellipse 60% 70% at 50% 0%, black 20%, transparent 70%);
+}
+
+/* Pricing: a range input whose track fills up to its thumb, --ratio being 0 to 1. The thumb's center
+   sits half a thumb in from each end, where the labels under the track line up. */
+.slider-plans {
+  --thumb: 1.75rem;
+  --track: 0.5rem;
+  --fill: calc(var(--thumb) / 2 + (100% - var(--thumb)) * var(--ratio, 0));
+  display: block;
+  height: var(--thumb);
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+
+  &::-webkit-slider-runnable-track {
+    height: var(--track);
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--foreground) var(--fill), var(--muted) var(--fill));
+  }
+  &::-moz-range-track {
+    height: var(--track);
+    border-radius: 999px;
+    background: linear-gradient(to right, var(--foreground) var(--fill), var(--muted) var(--fill));
+  }
+  &::-webkit-slider-thumb {
+    width: var(--thumb);
+    height: var(--thumb);
+    margin-top: calc((var(--track) - var(--thumb)) / 2);
+    appearance: none;
+    border: 0.4rem solid var(--foreground);
+    border-radius: 999px;
+    background: var(--background);
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+    transition: scale 150ms cubic-bezier(0.2, 0, 0, 1);
+  }
+  &::-moz-range-thumb {
+    width: var(--thumb);
+    height: var(--thumb);
+    box-sizing: border-box;
+    border: 0.4rem solid var(--foreground);
+    border-radius: 999px;
+    background: var(--background);
+    box-shadow: 0 2px 8px rgb(0 0 0 / 0.2);
+  }
+  &:active::-webkit-slider-thumb {
+    scale: 1.08;
+  }
+  &:focus-visible {
+    outline: none;
+  }
+  &:focus-visible::-webkit-slider-thumb {
+    box-shadow:
+      0 2px 8px rgb(0 0 0 / 0.2),
+      0 0 0 4px color-mix(in oklab, var(--ring) 50%, transparent);
+  }
+  &:focus-visible::-moz-range-thumb {
+    box-shadow:
+      0 2px 8px rgb(0 0 0 / 0.2),
+      0 0 0 4px color-mix(in oklab, var(--ring) 50%, transparent);
+  }
 }
 
 /* Archive issues: cleaned editor and Markdown HTML, so plain elements without classes. */

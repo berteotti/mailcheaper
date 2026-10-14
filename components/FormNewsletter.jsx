@@ -4,10 +4,12 @@ import { useActionState, useDeferredValue, useEffect, useMemo, useState, useTran
 import { ExternalLink, FlaskConical, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { saveNewsletter, sendWelcomeTest } from "@/app/(app)/newsletters/actions";
-import AvatarNewsletter from "@/components/AvatarNewsletter";
+import InputImage from "@/components/InputImage";
 import PreviewEmail from "@/components/PreviewEmail";
+import StatusSaved from "@/components/StatusSaved";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { CLEANUP_LIMITS, LAST_CHANCE_DAYS, getCleanupSettings } from "@/lib/cleanup";
@@ -16,21 +18,29 @@ import { formatNumber } from "@/lib/format";
 import { KEEP_URL_PLACEHOLDER, getLastChanceContent } from "@/lib/last-chance-content";
 import { MAX_AUTHOR_BIO_LENGTH, MAX_DESCRIPTION_LENGTH } from "@/lib/newsletters";
 import { UNSUBSCRIBE_PLACEHOLDER, renderEmail } from "@/lib/render-email";
+import { getSharedAddress, isOnSharedDomain } from "@/lib/sender-rules";
 import { slugify } from "@/lib/slug";
+import { usePaywall } from "@/lib/use-paywall";
 import { cn } from "@/lib/utils";
+import { prefillWelcome } from "@/lib/welcome-content";
 
 const IMAGE_PREVIEW_PATTERN = /^(https:\/\/\S+\.\S{2,}\/\S+|\/\S+\.\w{3,4})$/;
 
-export default function FormNewsletter({ newsletter, verifiedDomains, isSendingEnabled, testEmail, cleanupTotals }) {
+export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testEmail, cleanupTotals }) {
+	const paywall = usePaywall();
+	const hasPlan = paywall?.hasPlan ?? true;
+	const archiveHost = domains.find(({ archiveHostVerified }) => archiveHostVerified)?.archiveHost;
 	const [state, action, isPending] = useActionState(saveNewsletter, null);
 	const [isTesting, startTesting] = useTransition();
 	const [name, setName] = useState(newsletter?.name ?? "");
+	const [description, setDescription] = useState(newsletter?.description ?? "");
 	const [slug, setSlug] = useState(newsletter?.slug ?? "");
 	const [isSlugEdited, setIsSlugEdited] = useState(Boolean(newsletter));
 	const [fromName, setFromName] = useState(newsletter?.fromName ?? "");
-	const [fromEmail, setFromEmail] = useState(newsletter?.fromEmail ?? "");
+	const [fromLocal, setFromLocal] = useState(() => getInitialFrom({ newsletter, domains, sharedDomain }).local);
+	const [fromDomain, setFromDomain] = useState(() => getInitialFrom({ newsletter, domains, sharedDomain }).domain);
 	const [imageUrl, setImageUrl] = useState(newsletter?.imageUrl ?? "");
-	const [isConfirmationRequired, setIsConfirmationRequired] = useState(Boolean(newsletter?.requireConfirmation));
+	const [isConfirmationRequired, setIsConfirmationRequired] = useState(newsletter ? Boolean(newsletter.requireConfirmation) : true);
 	const [confirmationEdits, setConfirmationEdits] = useState(null);
 	const [isWelcomeEnabled, setIsWelcomeEnabled] = useState(Boolean(newsletter?.welcome?.enabled));
 	const [welcome, setWelcome] = useState({
@@ -40,12 +50,14 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 	});
 	const [isArchiveEnabled, setIsArchiveEnabled] = useState(Boolean(newsletter?.archiveEnabled));
 	const savedCleanup = getCleanupSettings(newsletter);
-	const [isCleanupEnabled, setIsCleanupEnabled] = useState(savedCleanup.enabled);
+	const [isCleanupEnabled, setIsCleanupEnabled] = useState(newsletter ? savedCleanup.enabled : true);
 	const [cleanup, setCleanup] = useState({ issues: String(savedCleanup.issues), days: String(savedCleanup.days) });
 	const deferredWelcome = useDeferredValue(welcome);
+	const archiveAddress = archiveHost ?? (sharedDomain ? `${slug || "slug"}.${sharedDomain}` : `/archive/${slug || "slug"}`);
+	const sharedAddress = sharedDomain ? getSharedAddress(slug || "slug", sharedDomain) : null;
+	const fromEmail = fromDomain === sharedDomain ? sharedAddress : fromDomain ? `${fromLocal}@${fromDomain}` : "";
 
 	useEffect(() => {
-		if (state?.ok) toast.success("Saved");
 		if (state?.error) toast.error(state.error);
 	}, [state]);
 
@@ -60,10 +72,10 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 		[deferredWelcome, name, newsletter?.postalAddress]
 	);
 
-	// Until it's edited, the built-in email follows the name.
+	// Until it's edited, the built-in email follows the name and the description.
 	const confirmation = useMemo(
-		() => confirmationEdits ?? getConfirmationContent({ name, confirmation: newsletter?.confirmation }),
-		[confirmationEdits, name, newsletter?.confirmation]
+		() => confirmationEdits ?? getConfirmationContent({ name, description, confirmation: newsletter?.confirmation }),
+		[confirmationEdits, name, description, newsletter?.confirmation]
 	);
 	const deferredConfirmation = useDeferredValue(confirmation);
 	const confirmationHtml = useMemo(
@@ -84,9 +96,9 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 	}, [name, fromEmail, newsletter?.postalAddress]);
 
 	const previewImageUrl = IMAGE_PREVIEW_PATTERN.test(imageUrl) ? imageUrl : "";
-	const fromDomain = fromEmail.split("@")[1]?.trim().toLowerCase();
-	const isDomainUnverified =
-		Boolean(fromDomain) && Array.isArray(verifiedDomains) && !verifiedDomains.includes(fromDomain);
+	const isShared = Boolean(sharedDomain) && fromDomain === sharedDomain;
+	const isDomainUnverified = !isShared && domains.some(({ domain, verified }) => domain === fromDomain && !verified);
+	const fromHint = getFromHint({ isShared, isDomainUnverified, fromDomain, hasDomains: domains.length > 0 });
 
 	function updateConfirmation(key) {
 		return (event) => {
@@ -102,6 +114,11 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 		};
 	}
 
+	function switchWelcome(isEnabled) {
+		setIsWelcomeEnabled(isEnabled);
+		if (isEnabled) setWelcome((current) => prefillWelcome(current, { name, description }));
+	}
+
 	function updateCleanup(key) {
 		return (event) => {
 			const { value } = event.target;
@@ -110,6 +127,7 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 	}
 
 	function sendTest() {
+		if (!hasPlan) return paywall.open("test");
 		startTesting(async () => {
 			const result = await sendWelcomeTest(newsletter._id);
 			if (result?.error) toast.error(result.error);
@@ -148,15 +166,7 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 					/>
 				</Field>
 				<Field label="Image" hint="Square logo, 128×128 or larger">
-					<span className="flex items-center gap-3">
-						<AvatarNewsletter newsletter={{ name, imageUrl: previewImageUrl }} size={36} />
-						<Input
-							name="imageUrl"
-							value={imageUrl}
-							placeholder="https://example.com/logo.png"
-							onChange={(event) => setImageUrl(event.target.value)}
-						/>
-					</span>
+					<InputImage name="imageUrl" defaultValue={newsletter?.imageUrl} label="newsletter image" onChange={setImageUrl} />
 				</Field>
 			</Section>
 
@@ -169,19 +179,39 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 						onChange={(event) => setFromName(event.target.value)}
 					/>
 				</Field>
-				<Field
-					label="From email"
-					hint={isDomainUnverified ? `${fromDomain} is not verified in SES` : null}
-					isWarning
-				>
-					<Input
-						name="fromEmail"
-						type="email"
-						value={fromEmail}
-						required
-						placeholder="hi@mail.example.com"
-						onChange={(event) => setFromEmail(event.target.value)}
-					/>
+				<Field label="From email" hint={fromHint} isWarning={isDomainUnverified}>
+					<span className="flex flex-wrap items-center gap-2">
+						<span className="flex items-center gap-2">
+							<Input
+								value={isShared ? sharedAddress.split("@")[0] : fromLocal}
+								readOnly={isShared}
+								required
+								aria-label="From email name"
+								placeholder="hi"
+								className={cn("w-32 font-mono", isShared && "text-muted-foreground")}
+								onChange={(event) => setFromLocal(event.target.value.trim())}
+							/>
+							<span className="text-sm text-muted-foreground">@</span>
+						</span>
+						{/* The shared domain has the slug in it, so it can be wider than the column. */}
+						<Select value={fromDomain} onValueChange={setFromDomain}>
+							<SelectTrigger
+								className="min-h-9 min-w-0 flex-auto py-1.5 text-left font-mono whitespace-normal wrap-anywhere data-[size=default]:h-auto *:data-[slot=select-value]:line-clamp-none"
+								aria-label="From domain"
+							>
+								<SelectValue placeholder="Add a domain first" />
+							</SelectTrigger>
+							<SelectContent className="max-w-[calc(100vw-20px)] wrap-anywhere">
+								{sharedDomain && <SelectItem value={sharedDomain}>{sharedAddress.split("@")[1]}</SelectItem>}
+								{domains.map(({ domain }) => (
+									<SelectItem key={domain} value={domain}>
+										{domain}
+									</SelectItem>
+								))}
+							</SelectContent>
+						</Select>
+					</span>
+					<input type="hidden" name="fromEmail" value={fromEmail} />
 				</Field>
 				<Field label="Reply-to">
 					<Input name="replyTo" type="email" defaultValue={newsletter?.replyTo} placeholder="Optional" />
@@ -265,7 +295,7 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 					<Switch
 						name="welcomeEnabled"
 						checked={isWelcomeEnabled}
-						onCheckedChange={setIsWelcomeEnabled}
+						onCheckedChange={switchWelcome}
 						aria-label="Welcome email"
 					/>
 				}
@@ -302,10 +332,10 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 				)}
 				{newsletter && (
 					<div className="flex items-center justify-between gap-3 px-4 py-3">
-						<p className="text-xs text-muted-foreground">
-							{isSendingEnabled ? `Sends the saved version to ${testEmail}` : "Sending is off"}
+						<p className="text-xs wrap-anywhere text-muted-foreground">
+							{isSendingEnabled || !hasPlan ? `Sends the saved version to ${testEmail}` : "Sending is off"}
 						</p>
-						<Button type="button" variant="outline" size="sm" onClick={sendTest} disabled={!isSendingEnabled || isTesting}>
+						<Button type="button" variant="outline" size="sm" onClick={sendTest} disabled={(hasPlan && !isSendingEnabled) || isTesting}>
 							{isTesting ? <Loader2 className="animate-spin" /> : <FlaskConical />}
 							Send test
 						</Button>
@@ -326,12 +356,13 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 				}
 			>
 				<p className="px-4 py-3 text-sm text-pretty text-muted-foreground">
-					Checked each time you send an issue. Contacts who ignored the last {cleanup.issues || savedCleanup.issues}{" "}
-					issues and showed no sign of life for {cleanup.days || savedCleanup.days} days get this email instead. A click
+					Stops sending to contacts who stopped opening, unless they answer a last-chance email. Each time you send an
+					issue, contacts who ignored the last {cleanup.issues || savedCleanup.issues} issues and showed no sign of life
+					for {cleanup.days || savedCleanup.days} days get this email instead. A click
 					on its button keeps them. Anyone who doesn&apos;t answer by a send{" "}
 					{LAST_CHANCE_DAYS} days later becomes dormant: not unsubscribed, not deleted, and back if they sign up again.
 				</p>
-				<Field label="Ignored issues" hint="In a row, counting from the first issue Mailcheap sent">
+				<Field label="Ignored issues" hint="In a row, counting from the first issue MailCheap sent">
 					<Input
 						name="cleanupIssues"
 						type="number"
@@ -397,17 +428,18 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 					</div>
 				}
 			>
-				<p className="px-4 py-3 text-sm text-pretty text-muted-foreground">
-					Sent issues get a page at /archive/{slug || "slug"}, with a signup form. To serve it on its own domain, add
-					the domain to ARCHIVE_HOSTS.
+				<p className="px-4 py-3 text-sm text-pretty wrap-anywhere text-muted-foreground">
+					Sent issues get a page with a signup form, at {archiveAddress}.
+					{!archiveHost && " Add a domain on the Domains page to serve it on your own subdomain."}
 				</p>
 				<Field label="Description" hint="One sentence under the name and in the subscribe popup">
 					<Textarea
 						name="description"
-						defaultValue={newsletter?.description}
+						value={description}
 						rows={2}
 						maxLength={MAX_DESCRIPTION_LENGTH}
 						placeholder="One idea about building things, every Sunday."
+						onChange={(event) => setDescription(event.target.value)}
 					/>
 				</Field>
 				<Field label="Author bio" hint="Under your name on the author page">
@@ -418,13 +450,8 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 						placeholder="I write about building small software companies."
 					/>
 				</Field>
-				<Field label="Author photo" hint="An https:// link or a path like /authors/jane.jpg. The newsletter image otherwise.">
-					<Input
-						name="authorImageUrl"
-						defaultValue={newsletter?.author?.imageUrl}
-						placeholder="https://example.com/jane.jpg"
-						className="font-mono"
-					/>
+				<Field label="Author photo" hint="Square photo on the author page. The newsletter image otherwise.">
+					<InputImage name="authorImageUrl" defaultValue={newsletter?.author?.imageUrl} label="author photo" />
 				</Field>
 				<Field label="Social links" hint="One link per line">
 					<Textarea
@@ -437,7 +464,11 @@ export default function FormNewsletter({ newsletter, verifiedDomains, isSendingE
 				</Field>
 			</Section>
 
-			<div className="sticky bottom-0 -mx-4 mt-2 flex justify-end bg-background/80 px-4 py-3 backdrop-blur-md md:-mx-10 md:px-10">
+			<div
+				data-save-bar
+				className="sticky bottom-0 -mx-4 mt-2 -mb-6 flex h-(--save-bar-height) items-center justify-end gap-3 bg-background/80 px-4 backdrop-blur-md md:-mx-10 md:-mb-10 md:px-10"
+			>
+				<StatusSaved savedAt={isPending ? null : state?.savedAt} />
 				<Button type="submit" disabled={isPending} className="min-w-20">
 					{isPending ? <Loader2 className="animate-spin" /> : newsletter ? "Save" : "Create"}
 				</Button>
@@ -483,11 +514,27 @@ function CleanupTotals({ totals }) {
 	);
 }
 
+// The saved address if it's on a domain the account can use, else the shared address, else the first domain.
+// The shared domain stands for the shared address, whose subdomain follows the slug.
+function getInitialFrom({ newsletter, domains, sharedDomain }) {
+	const [local = "", domain = ""] = String(newsletter?.fromEmail ?? "").split("@");
+	if (isOnSharedDomain(newsletter?.fromEmail, sharedDomain)) return { local: "hi", domain: sharedDomain };
+	if (domain && domains.some((item) => item.domain === domain)) return { local, domain };
+	return { local: local || "hi", domain: sharedDomain ?? domains[0]?.domain ?? "" };
+}
+
+function getFromHint({ isShared, isDomainUnverified, fromDomain, hasDomains }) {
+	if (isShared) return "The shared address follows the slug and needs no setup. Replies go to the reply-to, or to your account email.";
+	if (isDomainUnverified) return `${fromDomain} isn't verified yet. Emails wait until its DNS records are in.`;
+	if (!fromDomain && !hasDomains) return "Add a domain on the Domains page to send from it";
+	return null;
+}
+
 function Field({ label, hint, isWarning, children }) {
 	return (
 		<label className="grid gap-2 px-4 py-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
 			<span className="text-sm text-muted-foreground sm:pt-2">{label}</span>
-			<span className="flex flex-col gap-1.5">
+			<span className="flex min-w-0 flex-col gap-1.5">
 				{children}
 				{hint && (
 					<span

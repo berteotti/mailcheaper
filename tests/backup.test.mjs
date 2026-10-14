@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { env } from "./helpers/bindings.mjs";
-import { database, seedNewsletter } from "./helpers/d1.mjs";
+import { accountId, database, seedNewsletter } from "./helpers/d1.mjs";
 
 const { backupDatabase } = await import("../lib/backup.js");
 const { backupToSql } = await import("../scripts/backup-to-sql.mjs");
@@ -32,13 +32,16 @@ test("a synthetic backup restores into an empty database with the same rows, cou
 	seedNewsletter(db);
 	const at = Date.parse("2026-10-14T12:00:00Z");
 	const newsletterId = db.sqlite.prepare("SELECT _id FROM newsletters").get()._id;
-	const contact = db.sqlite.prepare(`INSERT INTO contacts (_id, newsletterId, email, subscribedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)`);
-	for (let index = 0; index < 1205; index++) contact.run(index.toString(16).padStart(24, "0"), newsletterId, `r${index}@example.com`, at, at, at);
-	db.sqlite.prepare(`INSERT INTO campaigns (_id, newsletterId, subject, status, createdAt, updatedAt) VALUES ('c0000000000000000000000a', ?, 'It''s here', 'sent', ?, ?)`).run(newsletterId, at, at);
-	db.sqlite.prepare(`INSERT INTO messages (_id, kind, campaignId, newsletterId, contactId, email, status, createdAt, updatedAt)
-		VALUES ('d0000000000000000000000a', 'campaign', 'c0000000000000000000000a', ?, '000000000000000000000001', 'r1@example.com', 'sending', ?, ?)`).run(newsletterId, at, at);
+	db.sqlite.prepare(`INSERT INTO users (id, name, email, emailVerified, createdAt, updatedAt, inbox) VALUES (?, '', 'owner@example.com', 1, ?, ?, 'owner@example.com')`)
+		.run(`user-${accountId}`, new Date(at).toISOString(), new Date(at).toISOString());
+	db.sqlite.prepare("INSERT INTO account_secrets (accountId, postshibaPassword, updatedAt) VALUES (?, 'encrypted', ?)").run(accountId, at);
+	const contact = db.sqlite.prepare(`INSERT INTO contacts (_id, accountId, newsletterId, email, subscribedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+	for (let index = 0; index < 1205; index++) contact.run(index.toString(16).padStart(24, "0"), accountId, newsletterId, `r${index}@example.com`, at, at, at);
+	db.sqlite.prepare(`INSERT INTO campaigns (_id, accountId, newsletterId, subject, status, createdAt, updatedAt) VALUES ('c0000000000000000000000a', ?, ?, 'It''s here', 'sent', ?, ?)`).run(accountId, newsletterId, at, at);
+	db.sqlite.prepare(`INSERT INTO messages (_id, accountId, kind, campaignId, newsletterId, contactId, email, status, createdAt, updatedAt)
+		VALUES ('d0000000000000000000000a', ?, 'campaign', 'c0000000000000000000000a', ?, '000000000000000000000001', 'r1@example.com', 'sending', ?, ?)`).run(accountId, newsletterId, at, at);
 	db.sqlite.prepare("UPDATE messages SET status = 'sent', sentAt = ?").run(at);
-	db.sqlite.prepare("INSERT INTO suppressions (_id, email, reason, createdAt, updatedAt) VALUES ('ffffffffffffffffffffffff', 'r2@example.com', 'complaint', ?, ?)").run(at, at);
+	db.sqlite.prepare("INSERT INTO suppressions (_id, accountId, email, reason, createdAt, updatedAt) VALUES ('ffffffffffffffffffffffff', ?, 'r2@example.com', 'complaint', ?, ?)").run(accountId, at, at);
 
 	const bucket = memoryBucket();
 	env.BACKUPS_BUCKET = bucket;
@@ -56,8 +59,11 @@ test("a synthetic backup restores into an empty database with the same rows, cou
 	for (const file of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) restored.exec(readFileSync(new URL(file, migrations), "utf8"));
 	restored.exec(backupToSql(directory));
 
-	for (const table of ["newsletters", "contacts", "campaigns", "messages", "suppressions"]) {
+	for (const table of ["accounts", "newsletters", "contacts", "campaigns", "messages", "suppressions"]) {
 		assert.deepEqual(restored.prepare(`SELECT * FROM ${table} ORDER BY _id`).all(), db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY _id`).all(), table);
+	}
+	for (const [table, key] of [["users", "id"], ["account_secrets", "accountId"]]) {
+		assert.deepEqual(restored.prepare(`SELECT * FROM ${table} ORDER BY ${key}`).all(), db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY ${key}`).all(), table);
 	}
 	assert.equal(JSON.parse(restored.prepare("SELECT stats FROM campaigns").get().stats).sent, 1, "counters are restored, not recounted");
 });

@@ -9,10 +9,12 @@ import { firstImageUrl } from "../lib/thumbnail.js";
 // Bodies as large as the API and the editor accept. Before, the first two took 6 s at 192 KB and 12 s
 // at 384 KB, and some Markdown shapes took minutes.
 const SIZE = 500_000;
-const MAX_MS = 200;
-// marked stops after a second on the shapes it's quadratic on, and 500 KB of Markdown can become 2 MB
-// of HTML to sanitize.
-const MAX_MARKDOWN_MS = 2000;
+// Each body may take this many times as long as an ordinary issue of the same size, timed in the same
+// run so that a slow or busy machine slows both. Linear shapes take a few times as long at most, even
+// where 500 KB becomes 2 MB of HTML to sanitize; quadratic ones, 40 times or more.
+const MAX_SLOWDOWN = 20;
+// marked stops after a second on the shapes it's quadratic on.
+const MAX_MARKED_MS = 1000;
 
 function repeat(unit) {
 	return unit.repeat(Math.floor(SIZE / unit.length));
@@ -41,6 +43,10 @@ function tagSoup(seed) {
 	return pieces.join("");
 }
 
+const ORDINARY_ISSUE = repeat(
+	'<h2>This week</h2><p>Hello <strong>there</strong>, read <a href="https://example.com/post">the post</a>.</p><ul><li>One</li><li>Two</li></ul><p><img src="https://example.com/a.png" alt="Chart"></p>'
+);
+
 const SHAPES = {
 	"nested <scr<script>ipt>": nested(Math.floor(SIZE / 8)),
 	"unclosed <script ": repeat("<script "),
@@ -49,6 +55,7 @@ const SHAPES = {
 	"unclosed <link ": repeat("<link "),
 	"unclosed <a ": repeat("<a "),
 	"a run of <": repeat("<"),
+	"a run of < ending in >": `${repeat("<")}>`,
 	"unclosed <div ": repeat("<div "),
 	"unclosed <body ": repeat("<body "),
 	"unclosed <title>": repeat("<title>"),
@@ -71,20 +78,30 @@ const MARKDOWN_SHAPES = {
 	"tag soup 1": SHAPES["tag soup 1"],
 };
 
-function timed(run) {
-	const startedAt = performance.now();
-	const result = run();
-	return { result, ms: performance.now() - startedAt };
+// The fastest of up to three runs, stopping at the first one under maxMs: a busy machine only adds time,
+// and a slow algorithm is slow on every run.
+function fastest(run, maxMs = 0) {
+	let best = { ms: Infinity };
+	for (let attempt = 0; attempt < 3 && best.ms >= maxMs; attempt += 1) {
+		const startedAt = performance.now();
+		const result = run();
+		const ms = performance.now() - startedAt;
+		if (ms < best.ms) best = { result, ms };
+	}
+	return best;
 }
 
 function assertNoUnsafeTags(html, label) {
 	assert.doesNotMatch(html, /<\/?(script|style|svg|iframe|form|button|noscript|link)\b|<!--/i, label);
 }
 
-// Warms up the regex engine and marked, which the first call would otherwise pay for.
+let maxMs;
+
 test.before(() => {
+	// Warms up the regex engine and marked, which the first call would otherwise pay for.
 	renderIssueBody({ format: "rich", html: tagSoup(9).slice(0, 20_000) });
 	renderIssueBody({ format: "markdown", markdown: tagSoup(9).slice(0, 20_000) });
+	maxMs = MAX_SLOWDOWN * fastest(() => renderIssueBody({ format: "rich", html: ORDINARY_ISSUE })).ms;
 });
 
 for (const [label, html] of Object.entries(SHAPES)) {
@@ -93,16 +110,16 @@ for (const [label, html] of Object.entries(SHAPES)) {
 			{ format: "rich", html },
 			{ format: "html", html, subject: "Hi", source: "api" },
 		]) {
-			const { result, ms } = timed(() => renderIssueBody(campaign));
-			assert.ok(ms < MAX_MS, `${label}, ${campaign.format}: ${Math.round(ms)} ms`);
+			const { result, ms } = fastest(() => renderIssueBody(campaign), maxMs);
+			assert.ok(ms < maxMs, `${label}, ${campaign.format}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
 			if (result.kind === "article") assertNoUnsafeTags(result.html, label);
 		}
 	});
 
 	test(`sending and saving read "${label}" (500 KB) in linear time`, () => {
 		for (const run of [() => htmlToText(html), () => firstImageUrl({ format: "html", html }), () => removeUnsafeElements(html)]) {
-			const { ms } = timed(run);
-			assert.ok(ms < MAX_MS, `${label}: ${Math.round(ms)} ms`);
+			const { ms } = fastest(run, maxMs);
+			assert.ok(ms < maxMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
 		}
 	});
 }
@@ -110,10 +127,11 @@ for (const [label, html] of Object.entries(SHAPES)) {
 for (const [label, markdown] of Object.entries(MARKDOWN_SHAPES)) {
 	test(`Markdown "${label}" (500 KB) renders in linear time`, (t) => {
 		t.mock.method(console, "error", () => {});
-		const { result, ms } = timed(() => renderIssueBody({ format: "markdown", markdown }));
-		assert.ok(ms < MAX_MARKDOWN_MS, `${label}: ${Math.round(ms)} ms`);
+		const maxMarkdownMs = MAX_MARKED_MS + maxMs;
+		const { result, ms } = fastest(() => renderIssueBody({ format: "markdown", markdown }), maxMarkdownMs);
+		assert.ok(ms < maxMarkdownMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMarkdownMs)} ms`);
 		assertNoUnsafeTags(result.html, label);
-		assert.ok(timed(() => firstImageUrl({ format: "markdown", markdown })).ms < MAX_MS, label);
+		assert.ok(fastest(() => firstImageUrl({ format: "markdown", markdown }), maxMs).ms < maxMs, label);
 	});
 }
 
