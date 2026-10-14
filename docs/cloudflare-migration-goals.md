@@ -34,7 +34,7 @@ Node.js 24.11.1+ (`.nvmrc`; tested on 25.3.0), Next.js API 16.3.8 through vinext
 
 ## Architecture as built
 
-- **App Worker** (`Cloudflare.Website.Vinext`, `worker/app.js`): dashboard, APIs, archive,
+- **App Worker** (`Cloudflare.Website.Vinext`, `worker/index.ts`): dashboard, APIs, archive,
   tracking, SES webhook, `/media` image fallback. Hosts the `RateLimiter` and `SesPacer`
   Durable Objects (`worker/durable-objects.js`). Bindings: D1, R2 assets, jobs queue (producer).
 - **Jobs Worker** (`Cloudflare.Worker`, `worker/jobs.js`, no public URL): queue consumer

@@ -5,7 +5,7 @@ import { SECURITY_HEADERS } from "../next.config.mjs";
 export { RateLimiter, SesPacer } from "./durable-objects.js";
 
 const app = {
-	async fetch(request, env, ctx) {
+	async fetch(request: Request, env: unknown, ctx: unknown) {
 		const result = await handler.fetch(request, env, ctx);
 		const response = new Response(result.body, result);
 		for (const { key, value } of SECURITY_HEADERS) response.headers.set(key, value);

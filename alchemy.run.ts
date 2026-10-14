@@ -58,7 +58,8 @@ export default Alchemy.Stack(
 		};
 
 		const app = yield* Cloudflare.Website.Vinext("App", {
-			main: "worker/app.js",
+			// No `main`: Website.Vinext passes it alongside its own source provider, which the deploy rejects
+			// ("source is mutually exclusive with main"). Its default entry, worker/index.ts, is ours.
 			compatibility: COMPATIBILITY,
 			domain: appDomain || undefined,
 			observability: { enabled: true },
