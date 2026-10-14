@@ -293,6 +293,21 @@ describe("own domains", () => {
 		assert.deepEqual(await as(first, () => m.domains.addDomainAction(null, form({ domain: "taken.com" }))), { error: "taken.com is already added" });
 	});
 
+	test("an admin can add the parent domain of the app's host, a customer can't, and the host stays the app's", async () => {
+		const admin = await customer("admin@example.com", "admin-news");
+		const user = await customer("parent-domain@example.com", "parent-domain");
+		await withEnv({ APP_URL: "https://mail.parent-host.com" }, async () => {
+			const add = (who, fields) => as(who, () => m.domains.addDomainAction(null, form(fields)));
+			assert.deepEqual(await add(user, { domain: "parent-host.com" }), { error: "This domain can't be added" });
+			assert.deepEqual(await add(admin, { domain: "mail.parent-host.com" }), { error: "This domain can't be added" });
+			assert.deepEqual(await add(admin, { domain: "parent-host.com", archiveHost: "mail.parent-host.com" }), {
+				error: "This address is MailCheap's own, pick another subdomain",
+			});
+			assert.deepEqual(await add(admin, { domain: "parent-host.com" }), { ok: true, domain: "parent-host.com" });
+		});
+		assert.equal((await findDomain(admin, "parent-host.com")).archiveHost, "news.parent-host.com");
+	});
+
 	test("another account's domain can't be checked or removed", async () => {
 		const owner = await customer("guarded@example.com", "guarded");
 		const attacker = await customer("attacker@example.com", "attacker");

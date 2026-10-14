@@ -97,6 +97,22 @@ test("customers can't claim MailCheap's domains, and archive hosts are subdomain
 	assert.match(getArchiveHostProblem("rp.example.com", "example.com"), /return path/);
 });
 
+test("an admin can add the parent domain of the app's host, never the host itself", () => {
+	const options = { sharedDomain: null, appHost: "mail.example.com" };
+	assert.match(getDomainProblem("example.com", options), /can't be added/, "not a customer");
+	assert.equal(getDomainProblem("example.com", { ...options, isAdmin: true }), null);
+	for (const domain of ["mail.example.com", "app.mail.example.com", "mailcheap.ai", "amazonses.com"]) {
+		assert.match(getDomainProblem(domain, { ...options, isAdmin: true }), /can't be added/, domain);
+	}
+	assert.match(getDomainProblem("example.com", { sharedDomain: "news.example.com", appHost: "mail.example.com", isAdmin: true }), /can't be added/, "or the shared domain's");
+
+	const hostOptions = { appHost: "mail.example.com" };
+	assert.equal(getArchiveHostProblem("news.example.com", "example.com", hostOptions), null);
+	for (const host of ["mail.example.com", "x.mail.example.com"]) {
+		assert.match(getArchiveHostProblem(host, "example.com", hostOptions), /MailCheap's own/, host);
+	}
+});
+
 test("with the app's own domain shared, <slug>.mailcheap.ai is the shared address and the rest of mailcheap.ai stays MailCheap's", () => {
 	const sharedDomain = "mailcheap.ai";
 	const options = { sharedDomain, appHost: "mailcheap.ai" };
