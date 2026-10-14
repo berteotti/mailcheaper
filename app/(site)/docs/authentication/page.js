@@ -1,6 +1,8 @@
 import Link from "next/link";
 import BlockCode from "@/components/BlockCode";
 import HeaderDocs from "@/components/HeaderDocs";
+import { MAX_ACTIVE_API_KEYS } from "@/lib/actions/api-keys";
+import { SLUG_CHANGES } from "@/lib/actions/newsletters";
 import { ACTIONS } from "@/lib/actions/registry";
 import { API_BASE_PATH, REQUESTS_PER_KEY } from "@/lib/api/rest";
 import { getAppUrl, isCloud } from "@/lib/config";
@@ -32,7 +34,8 @@ export default function AuthenticationPage() {
 			<Section title="Send the key" stagger={1}>
 				<p>
 					Create keys on the dashboard&apos;s API keys page. They start with <Code>mc_</Code> and are shown once: MailCheap only keeps
-					their hash, their first characters and when they were last used. The REST API and the MCP server take the same header.
+					their hash, their first characters and when they were last used. The REST API and the MCP server take the same header. An
+					account has up to {MAX_ACTIVE_API_KEYS} active keys.
 				</p>
 				<BlockCode title="Header" className="mt-4" code="Authorization: Bearer mc_…" />
 			</Section>
@@ -89,7 +92,8 @@ export default function AuthenticationPage() {
 			<Section title="Rate limits" stagger={4}>
 				<p>
 					Each key gets {REQUESTS_PER_KEY.limit} requests {formatWindow(REQUESTS_PER_KEY.window)} across REST and MCP. Some actions have
-					their own limit per key. Over a limit the answer is <Code>429 rate_limited</Code>; wait and retry.
+					their own limit, for each key and for the account: its keys, connected apps and dashboard share the account&apos;s, so more keys
+					don&apos;t raise it. Over a limit the answer is <Code>429 rate_limited</Code>; wait and retry.
 				</p>
 				<div className="mt-4 overflow-hidden rounded-xl shadow-border">
 					<table className="w-full text-left text-sm">
@@ -97,6 +101,12 @@ export default function AuthenticationPage() {
 							<tr>
 								<td className="py-2.5 pl-4 font-mono text-[13px]">add_contact</td>
 								<td className="py-2.5 pr-4 text-right text-muted-foreground tabular-nums">600 an hour, 5 per visitor in 10 minutes</td>
+							</tr>
+							<tr>
+								<td className="py-2.5 pl-4 font-mono text-[13px]">update_newsletter</td>
+								<td className="py-2.5 pr-4 text-right text-muted-foreground tabular-nums">
+									{SLUG_CHANGES.limit} slug changes {formatWindow(SLUG_CHANGES.window)} per account
+								</td>
 							</tr>
 							{limited.map(({ name, rateLimit }) => (
 								<tr key={name}>

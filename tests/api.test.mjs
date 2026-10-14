@@ -262,15 +262,18 @@ describe("errors", () => {
 		assert.equal((await getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, deleted])).status, "canceled", "kept in the database");
 	});
 
-	test("each key has its own rate limit per action", async () => {
+	test("each key has its own rate limit per action, and its account the same one across all its keys", async () => {
 		const user = await customer("limits@example.com");
 		for (let index = 0; index < 10; index += 1) {
 			assert.equal((await api(user.key, "POST", "/api-keys", { name: `Key ${index}`, level: "signups" })).status, 201);
 		}
 		const limited = await api(user.key, "POST", "/api-keys", { name: "One too many", level: "signups" });
-		assertError(limited, 429, "rate_limited");
+		assert.equal(assertError(limited, 429, "rate_limited"), "Too many create_api_key calls, try again later");
 		const otherKey = await createKey(user, "full", "Another full key");
-		assert.equal((await api(otherKey, "POST", "/api-keys", { name: "Other key's", level: "signups" })).status, 201);
+		const viaOtherKey = await api(otherKey, "POST", "/api-keys", { name: "Other key's", level: "signups" });
+		assert.equal(assertError(viaOtherKey, 429, "rate_limited"), "Too many create_api_key calls on this account, try again later");
+		const stranger = await customer("other-limits@example.com");
+		assert.equal((await api(stranger.key, "POST", "/api-keys", { name: "Theirs", level: "signups" })).status, 201, "another account counts on its own");
 	});
 
 	test("an account without an active plan only reaches billing", async () => {

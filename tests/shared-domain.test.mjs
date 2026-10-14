@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { execute, getAll, getOne } from "../lib/db.js";
-import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
+import { activate, anonymous, as, callApi, catchRedirect, form, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
 import { sent, state } from "./stubs/ses.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 
@@ -198,6 +198,35 @@ describe("shared addresses", () => {
 		assert.equal(hasRecordsFor("r.mailcheap.ai"), false);
 		assert.equal(state.identities.has(old.domain), false);
 		assert.equal(hasRecordsFor(old.domain), false);
+	});
+
+	test("a new slug whose records the DNS helper refuses leaves nothing at the provider, and a later save sets it up", async () => {
+		const user = await customer("refused@example.com", "refused-old");
+		const { sharedSender: old } = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
+		dnsRecords.set("rec_by_hand", { id: "rec_by_hand", slug: "by-hand", type: "CNAME", name: "refused-new.mailcheap.ai", value: "cname.vercel-dns.com" });
+		const save = () =>
+			as(user, () =>
+				m.newsletters.saveNewsletter(null, form({ id: user.newsletterId, name: "Refused", slug: "refused-new", postalAddress: "1 Main St, Paris", archiveEnabled: "on" }))
+			);
+
+		assert.equal((await save()).ok, true, "the newsletter is saved either way");
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
+		assert.deepEqual([newsletter.slug, newsletter.fromEmail, newsletter.sharedSender], ["refused-new", "hello@refused-new.mailcheap.ai", null]);
+		assert.equal(state.identities.has("refused-new.mailcheap.ai"), false, "the domain is taken back at the provider");
+		assert.deepEqual([...dnsRecords.values()].filter(({ name }) => name.endsWith("refused-new.mailcheap.ai")).map(({ id }) => id), ["rec_by_hand"]);
+		assert.equal(state.identities.has(old.domain), false);
+		assert.equal(hasRecordsFor(old.domain), false);
+		assert.ok(
+			platformEmails.some(({ subject, text }) => subject === "[MailCheap] Shared address not set up" && text.includes("refused-new.mailcheap.ai")),
+			"the admins hear of it"
+		);
+
+		dnsRecords.delete("rec_by_hand");
+		assert.equal((await save()).ok, true);
+		const { sharedSender } = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
+		assert.equal(sharedSender.domain, "refused-new.mailcheap.ai");
+		assert.ok(state.identities.has("refused-new.mailcheap.ai"));
+		assert.ok(sharedSender.dnsRecordIds.every((id) => dnsRecords.get(id)?.slug === "refused-new"));
 	});
 });
 

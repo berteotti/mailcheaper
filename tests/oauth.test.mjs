@@ -5,6 +5,7 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { execute, getOne, getValue } from "../lib/db.js";
 import { activate, anonymous, as, catchRedirect, form, platformEmails, startTestApp } from "./helpers/app.mjs";
 import { metadataDocuments } from "./stubs/cimd-node.mjs";
+import { flushAfter } from "./stubs/next-server.mjs";
 
 // OAuth for MCP clients, the way ChatGPT and Claude connect: discovery from /mcp's 401, a client metadata
 // document instead of registration (Grok Bot registers), the authorization code flow with PKCE through sign-in
@@ -260,6 +261,7 @@ before(async () => {
 		signin: await import("../app/signin/actions.js"),
 		consent: await import("../app/oauth/consent/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
+		contacts: await import("../app/(app)/contacts/actions.js"),
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		oauth: await import("../lib/oauth.js"),
 		accounts: await import("../lib/accounts.js"),
@@ -721,6 +723,28 @@ describe("tokens", () => {
 		const canceledByKey = toolError(await callTool(key, "list_contacts"));
 		assert.equal(canceledByKey.code, "subscription_required");
 		assert.deepEqual(toolError(await callTool(token, "list_contacts")), canceledByKey);
+	});
+
+	test("an app's signups count against its account with its keys and contacts added by hand: 600 an hour, and the owner hears of it", async () => {
+		const user = await customer("oauth-signups@example.com", { slug: "oauth-signups" });
+		const provider = createProvider();
+		await (await connectApp(user, provider)).close();
+		const token = provider.saved.tokens.access_token;
+		const { key } = await as(user, () => m.apiKeys.createApiKey(null, form({ name: "Site", level: "signups" })));
+		const newsletterId = (await getOne("SELECT _id FROM newsletters WHERE accountId = ?", [user.accountId]))._id;
+		const byHand = (email) => as(user, () => m.contacts.addContact(null, form({ newsletterId, email, consent: "on" })));
+
+		for (let index = 0; index < 598; index++) assert.equal((await byHand(`hand${index}@example.org`)).status, "active", String(index));
+		assert.equal((await callTool(token, "add_contact", { email: "from-the-app@example.org" })).structuredContent.created, true);
+		assert.equal((await callTool(key, "add_contact", { email: "from-the-site@example.org" })).structuredContent.created, true, "the 600th");
+
+		const refused = { code: "rate_limited", message: "Too many signups on this account, try again later" };
+		assert.deepEqual(toolError(await callTool(token, "add_contact", { email: "app-again@example.org" })), refused);
+		assert.deepEqual(toolError(await callTool(key, "add_contact", { email: "site-again@example.org" })), refused);
+		assert.deepEqual(await byHand("hand-again@example.org"), { error: "You can add 600 contacts an hour. Try again later." });
+		await flushAfter();
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 600);
+		assert.equal(platformEmails.filter(({ to, subject }) => to.includes(user.email) && subject === "[MailCheap] Signups paused").length, 1);
 	});
 });
 
