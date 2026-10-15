@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { getOne, getValue } from "../lib/db.js";
+import { createConfirmToken } from "../lib/confirmation.js";
+import { connectDb, getAll, getOne, getValue, newId } from "../lib/db.js";
 import { getEventPlan } from "../lib/email-event-rules.js";
 import { insertRow, updateRows } from "../lib/records.js";
+import { getClickUrl, getOpenUrl } from "../lib/tracking.js";
+import { createUnsubscribeToken } from "../lib/unsubscribe.js";
 import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, findAccount, form, platformEmails, queued, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
@@ -116,6 +119,26 @@ function assertError(response, status, code) {
 	assert.equal(response.body.error.code, code);
 }
 
+const BROWSER = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36";
+const DESTINATION = "https://example.net/issue?ref=newsletter";
+const tokenOf = (url) => url.split("/").at(-1);
+const loadMessage = (user, message) => getOne("SELECT * FROM messages WHERE accountId = ? AND _id = ?", [user.accountId, message._id]);
+const loadContact = (contact) => getOne("SELECT * FROM contacts WHERE accountId = ? AND _id = ?", [contact.accountId, contact._id]);
+
+// From a reader's browser, not a link scanner, so the click counts.
+function click(message, method = "GET") {
+	const url = getClickUrl("http://localhost:3000", message._id, DESTINATION);
+	const request = new Request(url, { method, headers: { "user-agent": BROWSER } });
+	return m.clickRoute[method](request, { params: Promise.resolve({ token: tokenOf(url) }) });
+}
+
+function open(message) {
+	const url = getOpenUrl("http://localhost:3000", message._id);
+	return m.openRoute.GET(new Request(url), { params: Promise.resolve({ token: tokenOf(url) }) });
+}
+
+const answerOf = (response) => [response.status, response.headers.get("location"), response.headers.get("cache-control")];
+
 before(async () => {
 	app = await startTestApp();
 	m = {
@@ -126,6 +149,10 @@ before(async () => {
 		archive: await import("../app/archive/actions.js"),
 		admin: await import("../app/admin/actions.js"),
 		jobs: (await import("../worker/jobs.js")).default,
+		clickRoute: await import("../app/c/[token]/route.js"),
+		openRoute: await import("../app/o/[token]/route.js"),
+		unsubscribeRoute: await import("../app/api/unsubscribe/route.js"),
+		confirm: await import("../app/confirm/actions.js"),
 		blocks: await import("../lib/account-blocks.js"),
 		health: await import("../lib/account-health.js"),
 		events: await import("../lib/email-events.js"),
@@ -323,5 +350,81 @@ describe("unblocking", () => {
 		assert.deepEqual(await as(user, () => m.campaigns.resumeCampaign(id)), { ok: true });
 		assert.equal(await runJobs(user), 1);
 		assert.equal((await loadCampaign(user, id)).status, "sent");
+	});
+});
+
+describe("links in emails", () => {
+	test("a blocked account's links say they're disabled instead of redirecting, until an admin unblocks it", async () => {
+		const user = await customer("blocked-links@example.com", { contacts: 0 });
+		const [clicked, opened] = await sentMessages(user, 2);
+		assert.deepEqual(await as(admin, () => m.admin.blockAccountAction(String(user.accountId), "Review")), { ok: true });
+
+		const page = await click(clicked);
+		assert.deepEqual(answerOf(page), [403, null, "no-store"], "no redirect, and nothing a browser or the CDN keeps");
+		assert.equal(page.headers.get("x-robots-tag"), "noindex");
+		assert.equal(page.headers.get("content-type"), "text/html; charset=utf-8");
+		const html = await page.text();
+		assert.ok(html.includes("<h1>This link is disabled</h1><p>The sender's account is suspended.</p>"));
+		assert.ok(!html.includes("example.net") && !html.includes("<a "), "the destination isn't shown or linked");
+		assert.deepEqual(answerOf(await click(clicked, "HEAD")), [403, null, "no-store"]);
+
+		assert.equal((await open(opened)).headers.get("content-type"), "image/gif", "the pixel still loads");
+		await flushAfter();
+		for (const message of [clicked, opened]) {
+			const { openedAt, clickedAt } = await loadMessage(user, message);
+			assert.deepEqual([openedAt, clickedAt], [null, null], "no open or click counts");
+		}
+
+		assert.deepEqual(await as(admin, () => m.admin.unblockAccountAction(String(user.accountId))), { ok: true });
+		assert.deepEqual(answerOf(await click(clicked)), [302, DESTINATION, "no-store"], "the same link, at once");
+		await flushAfter();
+		assert.ok((await loadMessage(user, clicked)).clickedAt, "and its clicks count again");
+	});
+
+	test("a blocked account's unsubscribe links work, one-click included, and pending readers can confirm", async () => {
+		const user = await customer("blocked-leave@example.com", { contacts: 2 });
+		const [oneClick, footer] = await getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [user.accountId]);
+		const pending = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email: "pending@example.org", status: "pending", subscribedAt: new Date() });
+		await m.blocks.blockAccount(user.accountId, { reason: "Review" });
+
+		function unsubscribe(contact, body) {
+			const token = createUnsubscribeToken({ contactId: contact._id, newsletterId: user.newsletterId });
+			return m.unsubscribeRoute.POST(new Request(`http://localhost:3000/api/unsubscribe?token=${token}`, { method: "POST", body }));
+		}
+		assert.equal((await unsubscribe(oneClick, new URLSearchParams({ "List-Unsubscribe": "One-Click" }))).status, 200);
+		const page = await unsubscribe(footer, form({ source: "page" }));
+		assert.equal(new URL(page.headers.get("location")).searchParams.get("status"), "done", "the footer link's page");
+		for (const contact of [oneClick, footer]) assert.equal((await loadContact(contact)).status, "unsubscribed");
+
+		const token = createConfirmToken({ contactId: pending._id, newsletterId: user.newsletterId });
+		assert.deepEqual(await anonymous(() => m.confirm.confirmSubscription(token)), { ok: true });
+		await flushAfter();
+		assert.equal((await loadContact(pending)).status, "active");
+	});
+
+	test("other accounts' links redirect and count as before, and so do links whose message is gone or whose check fails", async (t) => {
+		const user = await customer("open-links@example.com", { contacts: 0 });
+		const blocked = await customer("blocked-neighbor@example.com", { contacts: 0 });
+		await m.blocks.blockAccount(blocked.accountId, { reason: "Review" });
+		const [clicked, opened, checked] = await sentMessages(user, 3);
+
+		assert.deepEqual(answerOf(await click(clicked)), [302, DESTINATION, "no-store"]);
+		assert.deepEqual(answerOf(await click(checked, "HEAD")), [302, DESTINATION, "no-store"]);
+		assert.equal((await open(opened)).status, 200);
+		await flushAfter();
+		const [afterClick, afterOpen, afterHead] = await Promise.all([clicked, opened, checked].map((message) => loadMessage(user, message)));
+		assert.ok(afterClick.clickedAt && afterClick.openedAt, "a click counts as an open too");
+		assert.ok(afterOpen.openedAt && !afterOpen.clickedAt);
+		assert.ok(!afterHead.openedAt && !afterHead.clickedAt, "HEAD never counts");
+
+		assert.deepEqual(answerOf(await click({ _id: newId() })), [302, DESTINATION, "no-store"]);
+		t.mock.method(console, "error", () => {});
+		const db = await connectDb();
+		const prepare = db.prepare.bind(db);
+		t.mock.method(db, "prepare", (sql) => {
+			if (sql.includes("JOIN accounts")) throw new Error("D1 is unreachable");
+			return prepare(sql);
+		});
+		assert.deepEqual(answerOf(await click(clicked)), [302, DESTINATION, "no-store"]);
 	});
 });

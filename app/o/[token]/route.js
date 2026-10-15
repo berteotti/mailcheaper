@@ -1,5 +1,5 @@
 import { after } from "next/server";
-import { recordEngagement } from "@/lib/email-events";
+import { findTrackedMessage, recordEngagement } from "@/lib/email-events";
 import { readOpenToken } from "@/lib/tracking";
 
 // A 1×1 transparent GIF.
@@ -10,9 +10,9 @@ export async function GET(_request, { params }) {
 	const messageId = readOpenToken((await params).token);
 	if (messageId) {
 		after(() =>
-			recordEngagement({ messageId, type: "Open" }).catch((error) =>
-				console.error("[tracking] Open not recorded:", error)
-			)
+			findTrackedMessage(messageId)
+				.then((message) => recordEngagement({ message, type: "Open" }))
+				.catch((error) => console.error("[tracking] Open not recorded:", error))
 		);
 	}
 	return new Response(PIXEL, {

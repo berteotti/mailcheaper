@@ -41,6 +41,39 @@ const GROK_DOCUMENT = {
 	response_types: ["code"],
 	token_endpoint_auth_method: "none",
 };
+// ChatGPT's and Claude's documents as their client_id URLs served them on October 15, 2026. Claude Code's redirects
+// have no port: it picks one when it runs.
+const CHATGPT_DOCUMENT = {
+	client_id: "https://chatgpt.com/oauth/client.json",
+	client_uri: "https://chatgpt.com/",
+	redirect_uris: ["https://chatgpt.com/connector_platform_oauth_redirect"],
+	token_endpoint_auth_method: "private_key_jwt",
+	token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+	grant_types: ["authorization_code", "refresh_token"],
+	response_types: ["code"],
+	client_name: "ChatGPT",
+	logo_uri: "https://persistent.oaistatic.com/sonic/misc/openai-logo.png",
+	token_endpoint_auth_signing_alg: "RS256",
+	jwks_uri: "https://chatgpt.com/oauth/jwks.json",
+};
+const CLAUDE_DOCUMENT = {
+	client_id: "https://claude.ai/oauth/mcp-oauth-client-metadata",
+	client_name: "Claude",
+	client_uri: "https://claude.ai",
+	redirect_uris: ["https://claude.ai/api/mcp/auth_callback"],
+	grant_types: ["authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"],
+	response_types: ["code"],
+	token_endpoint_auth_method: "none",
+};
+const CLAUDE_CODE_DOCUMENT = {
+	client_id: "https://claude.ai/oauth/claude-code-client-metadata",
+	client_name: "Claude Code",
+	client_uri: "https://claude.ai",
+	redirect_uris: ["http://localhost/callback", "http://127.0.0.1/callback"],
+	grant_types: ["authorization_code", "refresh_token"],
+	response_types: ["code"],
+	token_endpoint_auth_method: "none",
+};
 // Grok Bot runs on Cursor's agents and registers (RFC 7591) with these two redirect URIs, from the desktop app and
 // from the cloud alike, as Cursor's staff gave them.
 const GROK_BOT = {
@@ -525,6 +558,72 @@ describe("connecting with the official MCP client", () => {
 		assert.deepEqual(
 			apps.filter(({ clientId }) => clientId === GROK_DOCUMENT.client_id).map(({ name, host }) => ({ name, host })),
 			[{ name: "Grok", host: "grok.com" }]
+		);
+	});
+
+	test("Claude connects with its published document, from claude.ai and from Claude Code on any loopback port", async () => {
+		const user = await customer("oauth-claude@example.com", { slug: "oauth-claude" });
+		for (const document of [CLAUDE_DOCUMENT, CLAUDE_CODE_DOCUMENT]) metadataDocuments.set(document.client_id, document);
+		for (const [document, redirectUri] of [
+			[CLAUDE_DOCUMENT, CLAUDE_DOCUMENT.redirect_uris[0]],
+			[CLAUDE_CODE_DOCUMENT, "http://localhost:53682/callback"],
+			[CLAUDE_CODE_DOCUMENT, "http://127.0.0.1:41893/callback"],
+		]) {
+			const provider = createProvider({ clientId: document.client_id, redirectUri, name: document.client_name });
+			const client = await connectApp(user, provider);
+			assert.equal(provider.saved.client?.client_id, document.client_id, redirectUri);
+			assert.ok(provider.saved.tokens.refresh_token, "Claude refreshes its tokens");
+			const result = await client.callTool({ name: "list_newsletters", arguments: {} });
+			assert.deepEqual(result.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-claude"]);
+			await client.close();
+		}
+		const apps = await m.oauth.listConnectedApps({ ownerId: user.userId });
+		assert.deepEqual(
+			apps.map(({ name, host }) => ({ name, host })).sort((a, b) => a.name.localeCompare(b.name)),
+			[
+				{ name: "Claude", host: "claude.ai" },
+				{ name: "Claude Code", host: "claude.ai" },
+			]
+		);
+	});
+
+	test("ChatGPT connects with its published document and trades the code with an RS256 assertion from the key set it names", async () => {
+		const user = await customer("oauth-chatgpt@example.com", { slug: "oauth-chatgpt" });
+		const { publicKey, privateKey } = await generateKeyPair("RS256");
+		metadataDocuments.set(CHATGPT_DOCUMENT.jwks_uri, { keys: [{ ...(await exportJWK(publicKey)), kid: "chatgpt-test", alg: "RS256", use: "sig" }] });
+		metadataDocuments.set(CHATGPT_DOCUMENT.client_id, CHATGPT_DOCUMENT);
+		const chatgpt = { clientId: CHATGPT_DOCUMENT.client_id, redirectUri: CHATGPT_DOCUMENT.redirect_uris[0] };
+		const { challenge, verifier } = pkce();
+		const callback = await authorizeInBrowser(user, authorizationUrl(chatgpt, { challenge, scope: `openid email profile offline_access ${MCP_SCOPE}` }));
+		assert.equal(callback.origin + callback.pathname, chatgpt.redirectUri);
+		assert.equal(callback.searchParams.get("iss"), APP_URL, "ChatGPT keeps its stable redirect only with the issuer in the response");
+
+		const assertion = await new SignJWT({ jti: crypto.randomUUID() })
+			.setProtectedHeader({ alg: "RS256", kid: "chatgpt-test" })
+			.setIssuer(chatgpt.clientId)
+			.setSubject(chatgpt.clientId)
+			.setAudience(APP_URL)
+			.setIssuedAt()
+			.setExpirationTime("2m")
+			.sign(privateKey);
+		const token = await postToken({
+			grant_type: "authorization_code",
+			code: callback.searchParams.get("code"),
+			redirect_uri: chatgpt.redirectUri,
+			client_id: chatgpt.clientId,
+			code_verifier: verifier,
+			resource: MCP_URL,
+			client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+			client_assertion: assertion,
+		});
+		assert.equal(token.status, 200, JSON.stringify(token.body));
+		assert.ok(token.body.refresh_token);
+		const result = await callTool(token.body.access_token, "list_newsletters");
+		assert.deepEqual(result.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-chatgpt"]);
+		const apps = await m.oauth.listConnectedApps({ ownerId: user.userId });
+		assert.deepEqual(
+			apps.map(({ name, host }) => ({ name, host })),
+			[{ name: "ChatGPT", host: "chatgpt.com" }]
 		);
 	});
 });
