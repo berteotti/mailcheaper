@@ -1,8 +1,12 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ImageResponse } from "next/og";
+import geistRegularUrl from "@/assets/fonts/Geist-Regular.ttf?inline";
+import geistSemiBoldUrl from "@/assets/fonts/Geist-SemiBold.ttf?inline";
 import { LOGO_FACETS, LOGO_SHADE, LOGO_VIEWBOX } from "@/components/LogoMailcheap";
 import { getAppHost } from "@/lib/config";
+
+// Rendered when asked: APP_URL is set where the Worker runs, not where it's built, so a build-time render would
+// carry the wrong address.
+export const dynamic = "force-dynamic";
 
 // The docs' card on every server: what they cover and the server's own address. MailCheap Cloud's marketing pages
 // have their own card.
@@ -11,6 +15,9 @@ export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
 const COLORS = { site: "#fafafa", ink: "#0a0a0a", muted: "#6b6b6b" };
+// Bundled into the Worker as data URLs: a deployed Worker has no project checkout to read files from.
+const fromDataUrl = (url) => Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
+const [geistRegular, geistSemiBold] = [fromDataUrl(geistRegularUrl), fromDataUrl(geistSemiBoldUrl)];
 
 function Logo() {
 	return (
@@ -22,11 +29,6 @@ function Logo() {
 }
 
 export default async function Image() {
-	const [geistRegular, geistSemiBold] = await Promise.all([
-		readFile(join(process.cwd(), "assets/fonts/Geist-Regular.ttf")),
-		readFile(join(process.cwd(), "assets/fonts/Geist-SemiBold.ttf")),
-	]);
-
 	return new ImageResponse(
 		<div
 			style={{

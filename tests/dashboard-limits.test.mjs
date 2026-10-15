@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { getAll, getOne, getValue } from "../lib/db.js";
 import { activate, as, callApi, catchRedirect, form, mockStripe, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 
@@ -20,9 +21,6 @@ before(async () => {
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		billing: await import("../app/(account)/billing/actions.js"),
 		uploadsRoute: await import("../app/api/uploads/route.js"),
-		Contact: (await import("../models/Contact.js")).default,
-		Domain: (await import("../models/Domain.js")).default,
-		Message: (await import("../models/Message.js")).default,
 	};
 });
 
@@ -96,8 +94,11 @@ describe("test emails", () => {
 		assert.deepEqual(await as(user, () => m.newsletters.sendWelcomeTest(user.newsletterId)), {
 			error: "You can send a test of the welcome email 20 times an hour. Try again later.",
 		});
-		assert.deepEqual(await m.Message.distinct("email", { accountId: user.accountId, kind: "test" }), ["tester@example.com"]);
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, kind: "test" }), 50);
+		assert.deepEqual(
+			(await getAll("SELECT DISTINCT email FROM messages WHERE accountId = ? AND kind = 'test'", [user.accountId])).map(({ email }) => email),
+			["tester@example.com"]
+		);
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ? AND kind = 'test'", [user.accountId]), 50);
 
 		const viaKey = await callApi("POST", `/api/v1/campaigns/${id}/test`, { key });
 		assert.deepEqual(
@@ -121,7 +122,7 @@ describe("contacts", () => {
 		await repeat(119, async (index) => assert.ok((await importChunk(`file${index}@example.org`)).importId, String(index)));
 		assert.deepEqual(await importChunk("one-more@example.org"), { error: "You can import contacts 120 times an hour. Try again later." });
 		assert.equal((await importChunk("last-chunk@example.org", importId)).importId, importId);
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 1 + 125 + 119 + 1);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 1 + 125 + 119 + 1);
 	});
 
 	test("contacts added by hand, who get the welcome email: 600 an hour per account", async () => {
@@ -130,7 +131,7 @@ describe("contacts", () => {
 		await repeat(600, async (index) => assert.equal((await add(`hand${index}@example.org`)).status, "active", String(index)));
 		assert.deepEqual(await add("one-more@example.org"), { error: "You can add 600 contacts an hour. Try again later." });
 		await flushAfter();
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 600);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 600);
 	});
 });
 
@@ -158,7 +159,7 @@ describe("images, domains and billing", () => {
 		assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain: "limit10.dev" }))), {
 			error: "You can add a domain 10 times an hour. Try again later.",
 		});
-		const id = String((await m.Domain.findOne({ accountId: user.accountId }).lean())._id);
+		const id = (await getOne("SELECT _id FROM domains WHERE accountId = ? ORDER BY createdAt LIMIT 1", [user.accountId]))._id;
 		await repeat(60, async (index) => assert.equal((await as(user, () => m.domains.checkDomainAction(id))).ok, true, String(index)));
 		assert.deepEqual(await as(user, () => m.domains.checkDomainAction(id)), {
 			error: "You can check a domain's DNS records 60 times an hour. Try again later.",

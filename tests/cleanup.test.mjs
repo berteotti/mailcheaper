@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
 	LAST_CHANCE_DAYS,
 	addToPreview,
+	cleanupTotalsQuery,
 	emptyPreview,
 	getCleanupAction,
 	getCleanupSettings,
@@ -11,6 +12,7 @@ import {
 	summarizePreview,
 	withEngagement,
 } from "../lib/cleanup.js";
+import { accountId, database, newsletterId, seedNewsletter } from "./helpers/d1.mjs";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.parse("2027-06-01T12:00:00Z");
@@ -84,15 +86,6 @@ test("after the last-chance email: skip while waiting, dormant at a send 14 or m
 	);
 });
 
-test("signs of life reset the count and move the date forward only", () => {
-	const at = new Date("2027-01-01T00:00:00Z");
-	assert.deepEqual(withEngagement(undefined, at), { $set: { ignoredIssues: 0 }, $max: { lastEngagedAt: at } });
-	assert.deepEqual(withEngagement({ $set: { status: "active" }, $max: { lastOpenAt: at }, $inc: { "stats.opens": 1 } }, at), {
-		$set: { status: "active", ignoredIssues: 0 },
-		$max: { lastOpenAt: at, lastEngagedAt: at },
-		$inc: { "stats.opens": 1 },
-	});
-});
 
 // Most engaged first, as the send walks them.
 const AUDIENCE = [
@@ -169,15 +162,28 @@ test("the send dialog's counts match what the send does, at any limit", () => {
 	assert.deepEqual(chunked, preview);
 });
 
-test("signing up again is a sign of life", () => {
-	const at = new Date(NOW);
-	assert.deepEqual(withEngagement(undefined, at), {
-		$set: { ignoredIssues: 0 },
-		$max: { lastEngagedAt: at },
+
+test("the settings totals count, in SQL, who is waiting, who answered and who went dormant", async (t) => {
+	const db = database(t);
+	seedNewsletter(db);
+	const insert = db.sqlite.prepare(`INSERT INTO contacts (_id, accountId, newsletterId, email, status, subscribedAt, lastChanceAt, lastOpenAt,
+		createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`);
+	const rows = [
+		["waiting", "active", daysAgo(5), null],
+		["kept", "active", daysAgo(5), daysAgo(2)],
+		["asleep", "dormant", daysAgo(30), null],
+		["never-asked", "active", null, null],
+	];
+	rows.forEach(([name, status, lastChanceAt, lastOpenAt], index) => {
+		insert.run(String(index).padStart(24, "0"), accountId, newsletterId, `${name}@example.com`, status, daysAgo(400).getTime(),
+			lastChanceAt?.getTime() ?? null, lastOpenAt?.getTime() ?? null);
 	});
-	assert.deepEqual(withEngagement({ $set: { status: "active", subscribedAt: at }, $unset: { unsubscribedAt: 1 } }, at), {
-		$set: { status: "active", subscribedAt: at, ignoredIssues: 0 },
-		$unset: { unsubscribedAt: 1 },
-		$max: { lastEngagedAt: at },
-	});
+	const { sql, params } = cleanupTotalsQuery({ accountId, newsletterId });
+	assert.deepEqual({ ...db.sqlite.prepare(sql).get(...params) }, { waiting: 1, kept: 1, dormant: 1 });
+	const other = cleanupTotalsQuery({ accountId: "74f1a2b3c4d5e6f7a8b9c0ff", newsletterId });
+	assert.deepEqual({ ...db.sqlite.prepare(other.sql).get(...other.params) }, { waiting: 0, kept: 0, dormant: 0 });
+
+	const engagement = withEngagement(new Date(NOW));
+	db.sqlite.prepare(`UPDATE contacts SET ${engagement.sql}`).run(...engagement.params.map((at) => at.getTime()));
+	assert.deepEqual({ ...db.sqlite.prepare(sql).get(...params) }, { waiting: 0, kept: 2, dormant: 1 }, "any sign of life answers");
 });

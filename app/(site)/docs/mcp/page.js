@@ -9,6 +9,10 @@ import { getSlug } from "@/lib/docs/reference";
 import { MCP_SCOPE } from "@/lib/oauth-rules";
 import { cn } from "@/lib/utils";
 
+// Rendered when asked: APP_URL is set where the Worker runs, not where it's built, so a build-time render would
+// carry the wrong address.
+export const dynamic = "force-dynamic";
+
 export const metadata = getDocsPageMetadata("/docs/mcp");
 
 const LINK_CLASS = "font-medium text-foreground underline decoration-foreground/30 underline-offset-4 hover:decoration-foreground";

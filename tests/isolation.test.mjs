@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { accountIdOf, getAll, getOne, getValue } from "../lib/db.js";
+import { insertRow } from "../lib/records.js";
 import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
@@ -46,11 +48,11 @@ async function upload(user) {
 
 async function snapshot() {
 	const [newsletter, campaign, contacts, apiKey, uploads] = await Promise.all([
-		m.Newsletter.findOne({ accountId: bob.accountId, _id: bobData.newsletterId }).lean(),
-		m.Campaign.findOne({ accountId: bob.accountId, _id: bobData.campaignId }).lean(),
-		m.Contact.find({ accountId: bob.accountId }).sort({ email: 1 }).lean(),
-		m.ApiKey.findOne({ accountId: bob.accountId }).lean(),
-		m.Upload.find({ accountId: bob.accountId }).lean(),
+		getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [bob.accountId, bobData.newsletterId]),
+		getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [bob.accountId, bobData.campaignId]),
+		getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [bob.accountId]),
+		getOne("SELECT * FROM api_keys WHERE accountId = ?", [bob.accountId]),
+		getAll("SELECT * FROM uploads WHERE accountId = ?", [bob.accountId]),
 	]);
 	return JSON.parse(JSON.stringify({ newsletter, campaign, contacts, apiKey, uploads }));
 }
@@ -63,18 +65,10 @@ before(async () => {
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		uploadsRoute: await import("../app/api/uploads/route.js"),
-		scope: await import("../lib/account-scope.js"),
 		contactQueries: await import("../lib/contacts.js"),
 		campaignQueries: await import("../lib/campaign-queries.js"),
 		apiKeyQueries: await import("../lib/api-keys.js"),
 		usage: await import("../lib/usage.js"),
-		Newsletter: (await import("../models/Newsletter.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		ApiKey: (await import("../models/ApiKey.js")).default,
-		Upload: (await import("../models/Upload.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Suppression: (await import("../models/Suppression.js")).default,
 	};
 
 	alice = await signIn("alice@example.com");
@@ -99,9 +93,9 @@ before(async () => {
 	const { key: apiKey } = await as(bob, () => m.apiKeys.createApiKey(null, form({ name: "Bob's site" })));
 	const uploaded = await upload(bob);
 	assert.equal(uploaded.status, 200);
-	const reader = await m.Contact.findOne({ accountId: bob.accountId, email: "reader1@example.org" }).lean();
-	const dormant = await m.Contact.findOne({ accountId: bob.accountId, email: "cold@example.org" }).lean();
-	const apiKeyId = (await m.ApiKey.findOne({ accountId: bob.accountId }).lean())._id.toString();
+	const reader = await getOne("SELECT * FROM contacts WHERE accountId = ? AND email = 'reader1@example.org'", [bob.accountId]);
+	const dormant = await getOne("SELECT * FROM contacts WHERE accountId = ? AND email = 'cold@example.org'", [bob.accountId]);
+	const apiKeyId = (await getOne("SELECT _id FROM api_keys WHERE accountId = ?", [bob.accountId]))._id;
 	bobData = {
 		newsletterId,
 		campaignId,
@@ -147,8 +141,8 @@ describe("server actions refuse another account's data", () => {
 			{ error: "Newsletter not found" }
 		);
 		assert.deepEqual(await snapshot(), before);
-		assert.equal(await m.Contact.countDocuments({ accountId: bob.accountId, email: "spam@example.net" }), 0);
-		assert.equal(await m.Contact.exists({ newsletterId: bobData.newsletterId, email: "spam@example.net" }).setOptions({ crossAccount: true }), null);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND email = 'spam@example.net'", [bob.accountId]), 0);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE newsletterId = ? AND email = 'spam@example.net'", [bobData.newsletterId]), 0);
 	});
 
 	test("campaigns: every action answers not found and changes nothing", async () => {
@@ -175,7 +169,7 @@ describe("server actions refuse another account's data", () => {
 			assert.equal(result?.error, "Campaign not found", name);
 		}
 		assert.equal(sesEmails.length, emailsBefore, "no test email went out");
-		assert.equal(await m.Campaign.countDocuments({ accountId: alice.accountId }), 0, "no copy landed in Alice's account");
+		assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [alice.accountId]), 0, "no copy landed in Alice's account");
 		assert.deepEqual(await snapshot(), before);
 	});
 
@@ -212,20 +206,20 @@ describe("lists only show the account's own data", () => {
 		const searched = await m.contactQueries.findContactsPage(aliceAccount, { query: "reader" });
 		assert.equal(searched.contacts.length, 0);
 
-		const campaigns = await m.Campaign.aggregate(m.campaignQueries.recentCampaignsPipeline({ accountId: alice.accountId, limit: 200 }));
+		const campaigns = await m.campaignQueries.listRecentCampaigns({ accountId: alice.accountId, limit: 200 });
 		assert.equal(campaigns.length, 0);
 
 		const keys = await m.apiKeyQueries.listApiKeys(aliceAccount);
 		assert.deepEqual(keys.map(({ name }) => name), ["Alice's site"]);
 		assert.equal(keys[0].hash, undefined, "the hash never reaches a page");
 
-		assert.equal(await m.Upload.countDocuments(m.scope.scoped(aliceAccount)), 0);
+		assert.equal(await getValue("SELECT count(*) FROM uploads WHERE accountId = ?", [aliceAccount._id]), 0);
 		const usage = await m.usage.getUsage(alice.account);
 		assert.equal(usage.subscribers, 0, "Bob's contacts don't count toward Alice's plan");
 	});
 
 	test("uploads land in the uploader's folder, and the route needs a paid session", async () => {
-		const [bobUpload] = await m.Upload.find({ accountId: bob.accountId }).lean();
+		const [bobUpload] = await getAll("SELECT * FROM uploads WHERE accountId = ?", [bob.accountId]);
 		assert.ok(bobUpload.pathname.startsWith(`accounts/${bob.accountId}/images/`));
 		assert.ok(bobData.uploadUrl.includes(`accounts/${bob.accountId}/`));
 
@@ -233,7 +227,7 @@ describe("lists only show the account's own data", () => {
 		assert.equal(aliceUpload.status, 200);
 		const aliceUrl = (await aliceUpload.json()).url;
 		assert.ok(aliceUrl.includes(`accounts/${alice.accountId}/`));
-		assert.equal(await m.Upload.countDocuments({ accountId: bob.accountId }), 1, "Bob still has his one upload");
+		assert.equal(await getValue("SELECT count(*) FROM uploads WHERE accountId = ?", [bob.accountId]), 1, "Bob still has his one upload");
 		const library = await as(alice, () => m.uploadsRoute.GET(new Request("http://localhost:3000/api/uploads")));
 		assert.deepEqual((await library.json()).images.map(({ url }) => url), [aliceUrl], "the picker shows Alice's image, not Bob's");
 
@@ -252,12 +246,12 @@ describe("API routes stay inside the key's account", () => {
 		});
 		assert.equal(response.status, 404);
 		assert.deepEqual(response.body, { error: { code: "not_found", message: "Newsletter not found" } });
-		assert.equal(await m.Contact.exists({ email: "intruder@example.net" }).setOptions({ crossAccount: true }), null);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE email = 'intruder@example.net'"), 0);
 
 		const own = await callApi("POST", "/api/v1/contacts", { key: bobData.apiKey, body: { newsletter: "bob-weekly", email: "fan@example.net" } });
 		assert.equal(own.status, 201);
 		await flushAfter();
-		const fan = await m.Contact.findOne({ accountId: bob.accountId, email: "fan@example.net" }).lean();
+		const fan = await getOne("SELECT * FROM contacts WHERE accountId = ? AND email = 'fan@example.net'", [bob.accountId]);
 		assert.equal(String(fan.newsletterId), bobData.newsletterId);
 	});
 
@@ -270,7 +264,7 @@ describe("API routes stay inside the key's account", () => {
 			body: { newsletter: "bob-weekly", subject: "Injected", format: "html", content: "<p>x</p>" },
 		});
 		assert.equal(draft.status, 404);
-		assert.equal(await m.Campaign.countDocuments({ accountId: bob.accountId }), 1);
+		assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [bob.accountId]), 1);
 	});
 
 	test("an unknown or revoked key gets 401", async () => {
@@ -283,23 +277,20 @@ describe("API routes stay inside the key's account", () => {
 });
 
 describe("the scope guard", () => {
-	test("a query on customer data without an accountId throws", async () => {
-		await assert.rejects(m.Contact.find({ email: "reader1@example.org" }), /Contact query without an accountId/);
-		await assert.rejects(m.Campaign.findOne({ _id: bobData.campaignId }), /Campaign query without an accountId/);
-		await assert.rejects(m.Newsletter.updateOne({ slug: "bob-weekly" }, { $set: { name: "x" } }), /without an accountId/);
-		await assert.rejects(m.Message.countDocuments({}), /Message query without an accountId/);
-		await assert.rejects(m.Campaign.aggregate([{ $match: { status: "draft" } }]), /Campaign query without an accountId/);
+	test("customer data can't be written without an account", async () => {
+		await assert.rejects(insertRow("contacts", { newsletterId: bobData.newsletterId, email: "orphan@example.org" }), /accountId/);
 		await assert.rejects(
-			m.Suppression.bulkWrite([{ updateOne: { filter: { email: "a@example.com" }, update: { $set: { reason: "manual" } }, upsert: true } }]),
-			/Suppression query without an accountId/
+			insertRow("campaigns", { accountId: "000000000000000000000000", newsletterId: bobData.newsletterId, subject: "Orphan" }),
+			/FOREIGN KEY/,
+			"nor with an account that doesn't exist"
 		);
-		await assert.rejects(m.Contact.create({ newsletterId: bobData.newsletterId, email: "orphan@example.org" }), /accountId/);
+		await assert.rejects(insertRow("uploads", { url: "https://x.test/a.png", pathname: "a.png", contentType: "image/png", bytes: 1 }), /accountId/);
 	});
 
-	test("an explicit crossAccount lookup still works, for webhooks and signed links", async () => {
-		const found = await m.Campaign.findOne({ _id: bobData.campaignId }).setOptions({ crossAccount: true }).lean();
-		assert.equal(String(found.accountId), String(bob.accountId));
-		assert.throws(() => m.scope.scoped(undefined), /No account to scope/);
-		assert.equal(String(m.scope.scoped({ _id: String(bob.accountId) }).accountId), String(bob.accountId));
+	test("queries are scoped by an account id, for webhooks and signed links too", async () => {
+		const found = await getOne("SELECT accountId FROM campaigns WHERE _id = ?", [bobData.campaignId]);
+		assert.equal(found.accountId, bob.accountId);
+		assert.throws(() => accountIdOf(undefined), /No account to scope/);
+		assert.equal(accountIdOf({ _id: String(bob.accountId) }), String(bob.accountId));
 	});
 });

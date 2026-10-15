@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
 import Stripe from "stripe";
-import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, form, jsonRequest, mockStripe, signIn, startTestApp } from "./helpers/app.mjs";
-import { published } from "./stubs/qstash.mjs";
+import { getOne, getValue } from "../lib/db.js";
+import { updateRows } from "../lib/records.js";
+import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, findAccount, form, mockStripe, queued, signIn, startTestApp } from "./helpers/app.mjs";
 import { state } from "./stubs/ses.mjs";
 
 // Free plans an admin gives from /admin, through the real admin actions, sends, REST API, MCP and Stripe webhook,
-// with SES, QStash and Stripe in memory.
+// with SES, the jobs queue and Stripe in memory.
 let app;
 let m;
 let admin;
@@ -80,10 +81,11 @@ async function callTool(key, name) {
 	return JSON.parse(text.split("\n").find((line) => line.startsWith("data: ")).slice(6)).result;
 }
 
+// Every published job, through the queue consumer as the Jobs Worker runs them.
 async function runSendJobs() {
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		if (url.endsWith("/api/jobs/send-batch")) await m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body }));
+	while (processed < queued.length) {
+		const body = queued[processed++];
+		await m.jobs.queue({ messages: [{ body, attempts: 1, ack() {}, retry() {} }] });
 	}
 }
 
@@ -114,7 +116,11 @@ function end(user) {
 }
 
 function load(user) {
-	return m.Account.findById(user.accountId).lean();
+	return findAccount(user.accountId);
+}
+
+function findNewsletter(user) {
+	return getOne("SELECT * FROM newsletters WHERE accountId = ? ORDER BY createdAt LIMIT 1", [user.accountId]);
 }
 
 async function createKey(user) {
@@ -122,14 +128,14 @@ async function createKey(user) {
 }
 
 before(async () => {
-	app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		admin: await import("../app/admin/actions.js"),
 		billing: await import("../app/(account)/billing/actions.js"),
 		checkoutRoute: await import("../app/(account)/billing/checkout/route.js"),
 		webhook: await import("../app/api/webhooks/stripe/route.js"),
 		mcpRoute: await import("../app/mcp/route.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
@@ -138,10 +144,6 @@ before(async () => {
 		plans: await import("../lib/plans.js"),
 		usage: await import("../lib/usage.js"),
 		usagePeriod: await import("../lib/usage-period.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 	admin = await signIn("admin@example.com");
 });
@@ -159,7 +161,7 @@ test("only admins give or end a free plan: anyone else gets a 404 and nothing ch
 	const id = String(user.accountId);
 	assert.equal(await as(user, () => catchNotFound(m.admin.giveFreePlan(null, form({ accountId: id, plan: "scale" })))), true);
 	assert.equal(await anonymous(() => catchNotFound(m.admin.giveFreePlan(null, form({ accountId: id, plan: "scale" })))), true);
-	assert.equal((await load(user)).comp, undefined);
+	assert.deepEqual((await load(user)).comp, {});
 
 	assert.equal((await give(user, { plan: "starter" })).ok, true);
 	assert.equal(await as(user, () => catchNotFound(m.admin.endFreePlan(id))), true);
@@ -172,20 +174,20 @@ test("only admins give or end a free plan: anyone else gets a 404 and nothing ch
 test("a free plan opens what a paid one does: its limits, a tenant, the shared address, and the API and MCP report it", async () => {
 	const user = await customer("free@example.com", "free-news");
 	assert.equal((await load(user)).ses?.provisionedAt, undefined);
-	assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender, undefined, "nothing before a plan");
+	assert.equal((await findNewsletter(user)).sharedSender, null, "nothing before a plan");
 	assert.equal((await createKey(user)).code, "subscription_required");
 
 	assert.equal((await give(user, { plan: "scale" })).ok, true);
 	const account = await load(user);
 	assert.deepEqual([account.comp.plan, account.comp.by, account.comp.until], ["scale", "admin@example.com", undefined]);
-	assert.equal(account.subscriptionStatus, undefined, "nothing on Stripe");
+	assert.equal(account.subscriptionStatus, null, "nothing on Stripe");
 	assert.equal(m.state.hasActiveSubscription(account), true);
 	assert.deepEqual(m.plans.getAccountLimits(account), { emails: 500_000, subscribers: 100_000 });
 	assert.deepEqual([account.usage.emailsSent, account.usage.paidThrough], [0, null]);
 	assert.equal(account.usage.periodStart.getTime(), account.comp.grantedAt.getTime(), "the month starts with the plan");
 	assert.equal(account.ses.tenantName, `mc-${user.accountId}`);
 	assert.ok(state.tenants.has(`mc-${user.accountId}`), "the tenant is at the email provider");
-	const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+	const newsletter = await findNewsletter(user);
 	assert.equal(newsletter.sharedSender.domain, "free-news.mailcheapmail.com", "the newsletter set up before gets its shared address");
 
 	const { key } = await createKey(user);
@@ -228,7 +230,7 @@ test("on a free plan every email counts, and the count starts over each month fr
 		"a new month without any invoice"
 	);
 
-	await m.Account.updateOne({ _id: user.accountId }, { $inc: { "usage.emailsSent": 5 } });
+	await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { inc: { "usage.emailsSent": 5 } });
 	account = await load(user);
 	assert.equal((await m.usage.getUsage(account, at(2, -3_600_000))).emailsSent, 5, "the same month keeps its count");
 	const quiet = await m.usage.getUsage(account, at(5));
@@ -239,14 +241,14 @@ test("on a free plan every email counts, and the count starts over each month fr
 test("a free plan stops at its end date like a canceled plan: no sending, no signups, the archive offline, the data kept", async () => {
 	const user = await customer("until@example.com", "until-news");
 	assert.deepEqual(await give(user, { plan: "growth", until: "2020-01-01" }), { error: "Pick an end date after today, or none" });
-	assert.equal((await load(user)).comp, undefined);
+	assert.deepEqual((await load(user)).comp, {});
 	assert.equal((await give(user, { plan: "growth", until: TOMORROW })).ok, true);
 	assert.equal((await load(user)).comp.until.toISOString(), `${TOMORROW}T00:00:00.000Z`);
 	const { key } = await createKey(user);
 	assert.equal((await callApi("POST", "/api/v1/contacts", { key, body: { newsletter: user.slug, email: "early@until.example.org" } })).status, 201);
 	const id = await draft(user);
 
-	await m.Account.updateOne({ _id: user.accountId }, { $set: { "comp.until": new Date(Date.now() - 1000) } });
+	await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "comp.until": new Date(Date.now() - 1000) } });
 	assert.equal(m.state.hasActiveSubscription(await load(user)), false);
 	assert.equal((await as(user, () => m.campaigns.sendCampaign(id, {}))).code, "subscription_required");
 	assert.equal((await callApi("POST", "/api/v1/contacts", { key, body: { newsletter: user.slug, email: "late@until.example.org" } })).status, 402);
@@ -257,8 +259,8 @@ test("a free plan stops at its end date like a canceled plan: no sending, no sig
 		{ status: billing.body.status, isActive: billing.body.isActive, freePlan: billing.body.freePlan },
 		{ status: "no_plan", isActive: false, freePlan: null }
 	);
-	assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 1, "the contacts stay");
-	assert.ok(await m.Campaign.exists({ accountId: user.accountId, _id: id }), "and the drafts");
+	assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 1, "the contacts stay");
+	assert.ok(await getOne("SELECT _id FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id]), "and the drafts");
 });
 
 test("ending a free plan stops sending at once and keeps the data; ending it again says there's none", async () => {
@@ -273,9 +275,9 @@ test("ending a free plan stops sending at once and keeps the data; ending it aga
 	assert.deepEqual([account.comp.plan, account.comp.by], ["pro", "admin@example.com"], "the record of it stays");
 	assert.equal(m.state.hasActiveSubscription(account), false);
 	assert.equal((await as(user, () => m.campaigns.sendTestCampaign(id))).code, "subscription_required");
-	assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 1);
-	assert.equal(await m.Campaign.countDocuments({ accountId: user.accountId }), 1);
-	const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+	assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 1);
+	assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [user.accountId]), 1);
+	const newsletter = await findNewsletter(user);
 	assert.equal(newsletter.sharedSender.domain, "ended-news.mailcheapmail.com", "the shared address waits for the next plan");
 	assert.ok(state.tenants.has(`mc-${user.accountId}`), "and the tenant");
 	assert.deepEqual(await end(user), { error: "No free plan to end" });
@@ -291,7 +293,7 @@ describe("with Stripe", () => {
 		assert.equal(link, "https://checkout.stripe.com/c/pay/cs_free", "the pricing page's buttons too");
 		assert.equal(calls.some(({ path }) => path === "/v1/billing_portal/sessions"), false);
 
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { "usage.emailsSent": 1_234 } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "usage.emailsSent": 1_234 } });
 		subscriptions.set("sub_up", subscription({ id: "sub_up", accountId: user.accountId, customer: "cus_up" }));
 		const session = { id: "cs_up", object: "checkout.session", mode: "subscription", client_reference_id: String(user.accountId), customer: "cus_up", subscription: "sub_up" };
 		await deliver("checkout.session.completed", session);

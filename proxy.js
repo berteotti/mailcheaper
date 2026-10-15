@@ -1,16 +1,17 @@
 import { getSessionCookie } from "better-auth/cookies";
 import { NextResponse } from "next/server";
 import { getArchiveHostUrl } from "@/lib/archive-hosts";
-import { isCloud } from "@/lib/config";
+import { AUTH_COOKIE_PREFIX, isCloud } from "@/lib/config";
 import { resolveArchiveHost } from "@/lib/host-routing";
 import { siteExtensions } from "@/lib/site-extensions";
 
 // No route can live under an underscore folder, so this always renders the not-found page with a 404.
 const NOT_FOUND_PATH = "/_not-on-this-server";
 
-// Reachable without a session: recipients, mail providers, AWS, Stripe, QStash, API-key
-// and OAuth clients (REST and MCP, OAuth discovery), the docs and uptime checks. The consent page checks
-// the session itself, so a signed-out visitor goes to sign-in with the app's request.
+// Reachable without a session: recipients, mail providers, AWS, Stripe, API-key and OAuth clients (REST and
+// MCP, OAuth discovery), the docs, uploads served by the app (/media), uptime checks and the jobs Worker (its
+// internal routes check their own key). The consent page checks the session itself, so a signed-out visitor
+// goes to sign-in with the app's request.
 const PUBLIC_PATHS = [
 	/^\/api\/health$/,
 	/^\/favicon\.ico$/,
@@ -30,12 +31,13 @@ const PUBLIC_PATHS = [
 	/^\/o\//,
 	/^\/c\//,
 	/^\/p\//,
+	/^\/media\//,
 	/^\/archive\//,
 	/^\/api\/unsubscribe$/,
 	/^\/api\/views$/,
 	/^\/api\/v1\//,
 	/^\/api\/webhooks\//,
-	/^\/api\/jobs\//,
+	/^\/api\/internal\//,
 ];
 
 // A newsletter's host carries its archive and the links in its emails, never the dashboard, not even its login page.
@@ -85,7 +87,7 @@ export async function proxy(request) {
 	}
 
 	// Only whether a session cookie is there: pages, actions and routes check the session itself.
-	const hasSession = Boolean(getSessionCookie(request));
+	const hasSession = Boolean(getSessionCookie(request, { cookiePrefix: AUTH_COOKIE_PREFIX }));
 	// MailCheap Cloud's marketing site (site extensions): its landing page shows at / to signed-out visitors, rendered
 	// at landingPath, which never shows in the address bar. A self-hosted server has none of its pages.
 	const { landingPath, publicPages, isPublicPath } = siteExtensions;

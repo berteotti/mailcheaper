@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import mongoose from "mongoose";
 import { createConfirmToken } from "../lib/confirmation.js";
+import { connectDb, getAll, getOne, getValue, newId } from "../lib/db.js";
 import { getEventPlan } from "../lib/email-event-rules.js";
+import { insertRow, updateRows } from "../lib/records.js";
 import { getClickUrl, getOpenUrl } from "../lib/tracking.js";
 import { createUnsubscribeToken } from "../lib/unsubscribe.js";
-import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, form, jsonRequest, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
+import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, findAccount, form, platformEmails, queued, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
-import { published } from "./stubs/qstash.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
 
 test("only a hard bounce that names a spam trap counts as a trap hit", () => {
@@ -25,21 +25,21 @@ let m;
 let admin;
 let processed = 0;
 
-// Every pending batch, as QStash would deliver them; the results of this account's. Scheduled sends run by hand.
+const countSent = async (user) => getValue("SELECT count(*) FROM messages WHERE accountId = ? AND sentAt IS NOT NULL", [user.accountId]);
+
+// Every published job, through the queue consumer as the Jobs Worker runs them; how many of this account's emails
+// went out. Scheduled sends run by hand.
 async function runJobs(user) {
-	const results = [];
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		if (!url.endsWith("/api/jobs/send-batch")) continue;
-		const result = await (await m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body }))).json();
-		if (String(body.accountId) === String(user.accountId)) results.push(result);
+	const before = await countSent(user);
+	while (processed < queued.length) {
+		const body = queued[processed++];
+		await m.jobs.queue({ messages: [{ body, attempts: 1, ack() {}, retry() {} }] });
 	}
-	return results;
+	return (await countSent(user)) - before;
 }
 
-const sentCount = (results) => results.reduce((sum, { sent = 0 }) => sum + sent, 0);
-const loadAccount = (user) => m.Account.findById(user.accountId).lean();
-const loadCampaign = (user, id) => m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+const loadAccount = (user) => findAccount(user.accountId);
+const loadCampaign = (user, id) => getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id]);
 
 async function customer(email, { contacts = 2, isFree = false } = {}) {
 	const user = await signIn(email);
@@ -80,23 +80,30 @@ async function draft(user, subject = "Issue") {
 	return id;
 }
 
-// Emails the account sent an hour ago, delivered, for events to land on.
-function sentMessages(user, count) {
+// Emails the account sent an hour ago, delivered, for events to land on: a campaign of its own, and a contact each.
+async function sentMessages(user, count) {
 	const now = Date.now();
-	return m.Message.insertMany(
-		Array.from({ length: count }, (_, index) => ({
-			kind: "campaign",
-			accountId: user.accountId,
-			newsletterId: user.newsletterId,
-			campaignId: new mongoose.Types.ObjectId(),
-			contactId: new mongoose.Types.ObjectId(),
-			email: `sent${index}@${user.slug}.example.org`,
-			status: "delivered",
-			providerMessageId: `provider-${user.accountId}-${index}`,
-			sentAt: new Date(now - 3_600_000),
-			deliveredAt: new Date(now - 3_500_000),
-		}))
-	);
+	const campaign = await insertRow("campaigns", { accountId: user.accountId, newsletterId: user.newsletterId, subject: "Sent", status: "sent" });
+	const messages = [];
+	for (let index = 0; index < count; index++) {
+		const email = `sent${index}@${user.slug}.example.org`;
+		const contact = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email, subscribedAt: new Date(now) });
+		messages.push(
+			await insertRow("messages", {
+				kind: "campaign",
+				accountId: user.accountId,
+				newsletterId: user.newsletterId,
+				campaignId: campaign._id,
+				contactId: contact._id,
+				email,
+				status: "delivered",
+				providerMessageId: `provider-${user.accountId}-${index}`,
+				sentAt: new Date(now - 3_600_000),
+				deliveredAt: new Date(now - 3_500_000),
+			})
+		);
+	}
+	return messages;
 }
 
 function event(user, message, fields) {
@@ -115,8 +122,8 @@ function assertError(response, status, code) {
 const BROWSER = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0 Safari/537.36";
 const DESTINATION = "https://example.net/issue?ref=newsletter";
 const tokenOf = (url) => url.split("/").at(-1);
-const loadMessage = (user, message) => m.Message.findOne({ accountId: user.accountId, _id: message._id }).lean();
-const loadContact = (contact) => m.Contact.findOne({ accountId: contact.accountId, _id: contact._id }).lean();
+const loadMessage = (user, message) => getOne("SELECT * FROM messages WHERE accountId = ? AND _id = ?", [user.accountId, message._id]);
+const loadContact = (contact) => getOne("SELECT * FROM contacts WHERE accountId = ? AND _id = ?", [contact.accountId, contact._id]);
 
 // From a reader's browser, not a link scanner, so the click counts.
 function click(message, method = "GET") {
@@ -133,7 +140,7 @@ function open(message) {
 const answerOf = (response) => [response.status, response.headers.get("location"), response.headers.get("cache-control")];
 
 before(async () => {
-	app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
@@ -141,7 +148,7 @@ before(async () => {
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		archive: await import("../app/archive/actions.js"),
 		admin: await import("../app/admin/actions.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		clickRoute: await import("../app/c/[token]/route.js"),
 		openRoute: await import("../app/o/[token]/route.js"),
 		unsubscribeRoute: await import("../app/api/unsubscribe/route.js"),
@@ -151,11 +158,6 @@ before(async () => {
 		events: await import("../lib/email-events.js"),
 		scheduling: await import("../lib/scheduling.js"),
 		sending: await import("../lib/sending.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 	admin = await signIn("admin@example.com");
 });
@@ -212,10 +214,10 @@ describe("what blocks an account", () => {
 		const other = await draft(user, "Other");
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(warned, {})), { ok: true });
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(other, {})), { ok: true });
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: warned }, { $set: { "stats.sent": 100, "stats.bounced": 5 } });
+		await updateRows("campaigns", { where: "accountId = ? AND _id = ?", params: [user.accountId, warned] }, { set: { "stats.sent": 100, "stats.bounced": 5 } });
 
 		const emailsBefore = platformEmails.length;
-		assert.equal(sentCount(await runJobs(user)), 3, "the other campaign went out");
+		assert.equal(await runJobs(user), 3, "the other campaign went out");
 		assert.equal((await loadAccount(user)).status, "active");
 		const paused = await loadCampaign(user, warned);
 		assert.deepEqual([paused.status, paused.pauseCode], ["paused", "high_rates"]);
@@ -225,7 +227,7 @@ describe("what blocks an account", () => {
 		assert.deepEqual(emails.map(({ to, subject }) => [to, subject]), [[["campaign-warning@example.com"], "[MailCheap] Campaign paused"]], "no admin email");
 
 		assert.deepEqual(await as(user, () => m.campaigns.resumeCampaign(warned)), { ok: true });
-		assert.equal(sentCount(await runJobs(user)), 3, "the same rates don't pause it again");
+		assert.equal(await runJobs(user), 3, "the same rates don't pause it again");
 		assert.equal((await loadCampaign(user, warned)).status, "sent");
 	});
 
@@ -235,10 +237,10 @@ describe("what blocks an account", () => {
 		const other = await draft(user, "Other");
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(bad, {})), { ok: true });
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(other, {})), { ok: true });
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: bad }, { $set: { "stats.sent": 100, "stats.bounced": 10 } });
+		await updateRows("campaigns", { where: "accountId = ? AND _id = ?", params: [user.accountId, bad] }, { set: { "stats.sent": 100, "stats.bounced": 10 } });
 
 		const emailsBefore = platformEmails.length;
-		assert.equal(sentCount(await runJobs(user)), 0);
+		assert.equal(await runJobs(user), 0);
 		const account = await loadAccount(user);
 		assert.deepEqual([account.status, account.pausedBy, account.pauseReason], ["paused", "campaign", "Bounce rate of 10.00% on a campaign (limit 5.00%)"]);
 		for (const id of [bad, other]) {
@@ -257,22 +259,22 @@ describe("a blocked account", () => {
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(sending, {})), { ok: true });
 		const scheduledAt = new Date(Date.now() + 3_600_000);
 		assert.deepEqual(await as(user, () => m.campaigns.scheduleCampaign(later, { scheduledAt: scheduledAt.toISOString() })), { ok: true });
-		const queuedWelcome = await m.Message.create({
+		const queuedWelcome = await insertRow("messages", {
 			kind: "welcome",
 			accountId: user.accountId,
 			newsletterId: user.newsletterId,
-			contactId: (await m.Contact.findOne({ accountId: user.accountId }).lean())._id,
+			contactId: (await getOne("SELECT _id FROM contacts WHERE accountId = ? LIMIT 1", [user.accountId]))._id,
 			email: `reader0@${user.slug}.example.org`,
 		});
 
 		assert.deepEqual(await as(admin, () => m.admin.blockAccountAction(String(user.accountId), "Review")), { ok: true });
 		const emailsBefore = sesEmails.length;
 
-		assert.equal(sentCount(await runJobs(user)), 0, "the queued batch");
+		assert.equal(await runJobs(user), 0, "the queued batch");
 		assert.equal((await loadCampaign(user, sending)).pauseCode, "account_blocked");
 
 		const due = new Date();
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: later }, { $set: { scheduledAt: due } });
+		await updateRows("campaigns", { where: "accountId = ? AND _id = ?", params: [user.accountId, later] }, { set: { scheduledAt: due } });
 		const scheduled = await m.scheduling.runScheduledSend({ accountId: String(user.accountId), campaignId: later, scheduledAt: due.toISOString() });
 		assert.equal(scheduled.code, "account_blocked");
 		assert.equal((await loadCampaign(user, later)).status, "draft", "a scheduled send goes back to draft");
@@ -281,15 +283,15 @@ describe("a blocked account", () => {
 		assert.deepEqual(test, { error: "This account is blocked: Review. Contact hello@mailcheap.ai to unblock it.", code: "account_blocked" });
 		assert.equal((await as(user, () => m.newsletters.sendWelcomeTest(user.newsletterId))).code, "account_blocked");
 
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
-		const reader = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email: "new-reader@example.org", status: "active" });
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
+		const reader = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email: "new-reader@example.org", status: "active", subscribedAt: new Date() });
 		assert.deepEqual(await m.sending.queueWelcomeEmail({ newsletter, contact: reader }), { skipped: "account is blocked" });
-		const pending = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email: "pending-reader@example.org", status: "pending" });
+		const pending = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email: "pending-reader@example.org", status: "pending", subscribedAt: new Date() });
 		assert.deepEqual(await m.sending.queueConfirmationEmail({ newsletter, contact: pending }), { skipped: "account is blocked" });
 
 		const batch = await m.sending.sendMessageBatch({ accountId: String(user.accountId), messageIds: [String(queuedWelcome._id)] });
 		assert.deepEqual([batch.sent, batch.failed], [0, 1], "a welcome email already queued");
-		assert.match((await m.Message.findOne({ accountId: user.accountId, _id: queuedWelcome._id }).lean()).error, /^This account is blocked: Review/);
+		assert.match((await getOne("SELECT error FROM messages WHERE accountId = ? AND _id = ?", [user.accountId, queuedWelcome._id])).error, /^This account is blocked: Review/);
 		assert.equal(sesEmails.length, emailsBefore, "nothing reached the provider");
 	});
 
@@ -319,7 +321,7 @@ describe("a blocked account", () => {
 		assertError(await callApi("POST", "/api/v1/campaigns", { key: user.key, body: { subject: "New" } }), 403, "account_blocked");
 		assertError(await callApi("POST", `/api/v1/campaigns/${id}/schedule`, { key: user.key, body: { scheduledAt: tomorrow } }), 403, "account_blocked");
 		assertError(await callApi("POST", "/api/v1/api-keys", { key: user.key, body: { name: "More", level: "full" } }), 403, "account_blocked");
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 1, "nobody was added");
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 1, "nobody was added");
 
 		assert.equal((await callApi("GET", "/api/v1/contacts", { key: user.key })).status, 200);
 		assert.equal((await callApi("GET", `/api/v1/campaigns/${id}`, { key: user.key })).status, 200);
@@ -346,7 +348,7 @@ describe("unblocking", () => {
 		assert.deepEqual(await as(admin, () => m.admin.unblockAccountAction(String(user.accountId))), { ok: true });
 		assert.equal((await loadCampaign(user, id)).status, "paused");
 		assert.deepEqual(await as(user, () => m.campaigns.resumeCampaign(id)), { ok: true });
-		assert.equal(sentCount(await runJobs(user)), 1);
+		assert.equal(await runJobs(user), 1);
 		assert.equal((await loadCampaign(user, id)).status, "sent");
 	});
 });
@@ -370,7 +372,7 @@ describe("links in emails", () => {
 		await flushAfter();
 		for (const message of [clicked, opened]) {
 			const { openedAt, clickedAt } = await loadMessage(user, message);
-			assert.deepEqual([openedAt, clickedAt], [undefined, undefined], "no open or click counts");
+			assert.deepEqual([openedAt, clickedAt], [null, null], "no open or click counts");
 		}
 
 		assert.deepEqual(await as(admin, () => m.admin.unblockAccountAction(String(user.accountId))), { ok: true });
@@ -381,8 +383,8 @@ describe("links in emails", () => {
 
 	test("a blocked account's unsubscribe links work, one-click included, and pending readers can confirm", async () => {
 		const user = await customer("blocked-leave@example.com", { contacts: 2 });
-		const [oneClick, footer] = await m.Contact.find({ accountId: user.accountId }).sort({ email: 1 }).lean();
-		const pending = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email: "pending@example.org", status: "pending" });
+		const [oneClick, footer] = await getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [user.accountId]);
+		const pending = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email: "pending@example.org", status: "pending", subscribedAt: new Date() });
 		await m.blocks.blockAccount(user.accountId, { reason: "Review" });
 
 		function unsubscribe(contact, body) {
@@ -415,10 +417,13 @@ describe("links in emails", () => {
 		assert.ok(afterOpen.openedAt && !afterOpen.clickedAt);
 		assert.ok(!afterHead.openedAt && !afterHead.clickedAt, "HEAD never counts");
 
-		assert.deepEqual(answerOf(await click({ _id: new mongoose.Types.ObjectId() })), [302, DESTINATION, "no-store"]);
+		assert.deepEqual(answerOf(await click({ _id: newId() })), [302, DESTINATION, "no-store"]);
 		t.mock.method(console, "error", () => {});
-		t.mock.method(m.Message, "aggregate", () => {
-			throw new Error("MongoDB is unreachable");
+		const db = await connectDb();
+		const prepare = db.prepare.bind(db);
+		t.mock.method(db, "prepare", (sql) => {
+			if (sql.includes("JOIN accounts")) throw new Error("D1 is unreachable");
+			return prepare(sql);
 		});
 		assert.deepEqual(answerOf(await click(clicked)), [302, DESTINATION, "no-store"]);
 	});

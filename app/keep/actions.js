@@ -2,7 +2,6 @@
 
 import { headers } from "next/headers";
 import { keepContact } from "@/lib/contacts";
-import { connectDb } from "@/lib/db";
 import { verifyKeepToken } from "@/lib/last-chance";
 import { findNewsletterAnywhere } from "@/lib/public-newsletters";
 import { getClientIp, isRateLimited } from "@/lib/rate-limit";
@@ -15,7 +14,6 @@ export async function keepSending(token) {
 	const reference = verifyKeepToken(token);
 	if (!reference) return { error: "invalid" };
 
-	await connectDb();
 	const newsletter = await findNewsletterAnywhere({ _id: reference.newsletterId });
 	const contact = newsletter && (await keepContact({ accountId: newsletter.accountId, ...reference }));
 	return contact ? { ok: true } : { error: "invalid" };

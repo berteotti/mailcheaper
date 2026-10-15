@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
-import mongoose from "mongoose";
-import { addVerifiedDomain, as, callApi, catchRedirect, form, jsonRequest, mockStripe, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
-import { published } from "./stubs/qstash.mjs";
+import { execute, getOne, getValue } from "../lib/db.js";
+import { updateRows } from "../lib/records.js";
+import { addVerifiedDomain, as, callApi, catchRedirect, findAccount, form, jsonRequest, mockStripe, platformEmails, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 
 // A self-hosted server: no MAILCHEAP_CLOUD, no Stripe keys, no shared domain, and sign-in limited to
 // ALLOWED_EMAILS and ADMIN_EMAILS. Google answers in memory.
@@ -15,14 +15,15 @@ let processed = 0;
 let stripeCalls;
 let nextId = 0;
 
+// Every published job, through the queue consumer as the Jobs Worker runs them; how many emails went out.
 async function runJobs() {
-	const results = [];
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		if (!url.endsWith("/api/jobs/send-batch")) continue;
-		results.push(await (await m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body }))).json());
+	const countSent = () => getValue("SELECT count(*) FROM messages WHERE sentAt IS NOT NULL");
+	const before = await countSent();
+	while (processed < queued.length) {
+		const body = queued[processed++];
+		await m.jobs.queue({ messages: [{ body, attempts: 1, ack() {}, retry() {} }] });
 	}
-	return results;
+	return (await countSent()) - before;
 }
 
 async function createKey(user) {
@@ -59,7 +60,7 @@ function cookieOf(user) {
 }
 
 function countUsers(email) {
-	return mongoose.connection.db.collection("users").countDocuments({ email });
+	return getValue("SELECT count(*) FROM users WHERE email = ?", [email]);
 }
 
 function idToken(claims) {
@@ -84,7 +85,7 @@ async function signInWithGoogle({ email, verified = true, sub = email }) {
 		const callback = new Request(`http://localhost:3000/api/auth/callback/google?code=test-code&state=${url.searchParams.get("state")}`, { headers: { cookie } });
 		const response = await as(visitor, () => m.authRoute.GET(callback));
 		const location = new URL(response.headers.get("location"), "http://localhost:3000");
-		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("better-auth.session_token=") && !line.startsWith("better-auth.session_token=;"));
+		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("mailcheap.session_token=") && !line.startsWith("mailcheap.session_token=;"));
 		return { status: response.status, path: location.pathname, error: location.searchParams.get("error"), isSignedIn: cookies.length > 0 };
 	} finally {
 		globalThis.fetch = previousFetch;
@@ -102,8 +103,6 @@ before(async () => {
 		EMAIL_FROM: "MailCheap <login@mail.example.com>",
 		GOOGLE_CLIENT_ID: "google-client",
 		GOOGLE_CLIENT_SECRET: "google-secret",
-		QSTASH_CURRENT_SIGNING_KEY: "sig-current",
-		QSTASH_NEXT_SIGNING_KEY: "sig-next",
 	});
 	m = {
 		auth: await import("../lib/auth.js"),
@@ -116,15 +115,13 @@ before(async () => {
 		billingActions: await import("../app/(account)/billing/actions.js"),
 		checkoutRoute: await import("../app/(account)/billing/checkout/route.js"),
 		stripeWebhook: await import("../app/api/webhooks/stripe/route.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		mcpRoute: await import("../app/mcp/route.js"),
 		proxy: (await import("../proxy.js")).proxy,
 		NextRequest: (await import("next/server")).NextRequest,
 		sitemap: (await import("../app/sitemap.js")).default,
 		docs: await import("../lib/docs/llms.js"),
 		accountState: await import("../lib/account-state.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
 	};
 });
 
@@ -143,7 +140,7 @@ describe("billing is off", () => {
 		const user = await signIn("owner@example.com");
 		const { account } = await as(user, () => m.auth.requireAccount());
 		assert.equal(String(account._id), String(user.accountId));
-		assert.equal(account.subscriptionStatus, undefined, "no plan, and none needed");
+		assert.equal(account.subscriptionStatus, null, "no plan, and none needed");
 		assert.equal(m.accountState.getAccountStatus(account), "active");
 		assert.equal(await as(user, () => catchRedirect(m.checkoutRoute.GET(new Request("http://localhost:3000/billing/checkout?plan=growth")))), "/billing?interval=month");
 		assert.equal(stripeCalls.length, 0);
@@ -158,16 +155,15 @@ describe("billing is off", () => {
 		const newsletterId = url.split("/").at(-1);
 		const rows = ["a", "b", "c"].map((name) => ({ email: `${name}@readers.example.org`, status: "active" }));
 		await as(user, () => m.contacts.importContacts({ newsletterId, consent: true, rows }));
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { "usage.emailsSent": 50_000_000 } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "usage.emailsSent": 50_000_000 } });
 
 		const draftUrl = await as(user, () => catchRedirect(m.campaigns.createCampaign(newsletterId)));
 		const id = draftUrl.split("/").at(-1);
 		await as(user, () => m.campaigns.saveCampaign(id, { subject: "Issue", previewText: "This week", body: "<p>Hello</p>" }));
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(id, {})), { ok: true });
-		const [batch] = await runJobs();
-		assert.equal(batch.sent, 3);
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "sent");
-		assert.equal((await m.Account.findById(user.accountId).lean()).usage.emailsSent, 50_000_003);
+		assert.equal(await runJobs(), 3);
+		assert.equal((await getOne("SELECT status FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id])).status, "sent");
+		assert.equal((await findAccount(user.accountId)).usage.emailsSent, 50_000_003);
 
 		const key = await createKey(user);
 		const overview = await callApi("GET", "/api/v1/overview", { key });
@@ -245,9 +241,9 @@ describe("sign-in allowlist", () => {
 
 		const allowed = await signInWithGoogle({ email: "google@team.example.org" });
 		assert.deepEqual(allowed, { status: 302, path: "/", error: null, isSignedIn: true });
-		const user = await mongoose.connection.db.collection("users").findOne({ email: "google@team.example.org" });
+		const user = await getOne("SELECT * FROM users WHERE email = ?", ["google@team.example.org"]);
 		assert.equal(user.emailVerified, true);
-		assert.ok(await m.Account.exists({ ownerId: user._id }), "the account comes with the user");
+		assert.ok(await getOne("SELECT _id FROM accounts WHERE ownerId = ?", [user.id]), "the account comes with the user");
 	});
 
 	test("Google: an address Google hasn't verified neither signs up nor joins the user who owns it", async () => {
@@ -269,11 +265,17 @@ describe("sign-in allowlist", () => {
 			context.internalAdapter.createUser({ email: "inside@example.com", emailVerified: true, name: "" }, { method: "email-otp" }),
 			(error) => error.body?.code === m.auth.SIGNIN_NOT_ALLOWED
 		);
-		const { insertedId } = await mongoose.connection.db
-			.collection("users")
-			.insertOne({ email: "before-the-list@example.com", emailVerified: true, name: "", createdAt: new Date(), updatedAt: new Date() });
-		await assert.rejects(context.internalAdapter.createSession(String(insertedId)), (error) => error.body?.code === m.auth.SIGNIN_NOT_ALLOWED);
-		assert.equal(await mongoose.connection.db.collection("sessions").countDocuments({ userId: insertedId }), 0);
+		const now = new Date().toISOString();
+		const insertedId = "before-the-list";
+		await execute("INSERT INTO users (id, email, emailVerified, name, createdAt, updatedAt, inbox) VALUES (?, ?, 1, '', ?, ?, ?)", [
+			insertedId,
+			"before-the-list@example.com",
+			now,
+			now,
+			"before-the-list@example.com",
+		]);
+		await assert.rejects(context.internalAdapter.createSession(insertedId), (error) => error.body?.code === m.auth.SIGNIN_NOT_ALLOWED);
+		assert.equal(await getValue("SELECT count(*) FROM sessions WHERE userId = ?", [insertedId]), 0);
 	});
 
 	test("an address taken off the list is signed out at its next request, and its API keys stop working", async () => {

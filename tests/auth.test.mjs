@@ -1,20 +1,18 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import mongoose from "mongoose";
+import { getOne, getValue } from "../lib/db.js";
 import { anonymous, as, catchNotFound, catchRedirect, form, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
 
 let app;
 let auth;
 let actions;
 let accounts;
-let Account;
 
 before(async () => {
 	app = await startTestApp();
 	auth = await import("../lib/auth.js");
 	actions = await import("../app/signin/actions.js");
 	accounts = await import("../lib/accounts.js");
-	Account = (await import("../models/Account.js")).default;
 });
 
 after(() => app?.stop());
@@ -23,20 +21,20 @@ test("the first sign-in creates the user and their account; the next ones reuse 
 	const first = await signIn("new@example.com");
 	assert.ok(first.account, "account created at the first sign-in");
 	assert.equal(String(first.account.ownerId), String(first.userId));
-	assert.equal(first.account.subscriptionStatus, undefined, "no plan before checkout");
+	assert.equal(first.account.subscriptionStatus, null, "no plan before checkout");
 	assert.equal(first.account.status, "active");
 
 	const again = await signIn("New@Example.com");
 	assert.equal(String(again.accountId), String(first.accountId));
-	assert.equal(await Account.countDocuments({ ownerId: first.userId }), 1);
-	assert.equal(await mongoose.connection.db.collection("users").countDocuments({ email: "new@example.com" }), 1);
+	assert.equal(await getValue("SELECT count(*) FROM accounts WHERE ownerId = ?", [first.userId]), 1);
+	assert.equal(await getValue("SELECT count(*) FROM users WHERE email = ?", ["new@example.com"]), 1);
 });
 
 test("a returning user's sign-in opens no second account", async () => {
 	const first = await signIn("signup@example.com");
 	await signIn("signup@example.com");
 	assert.equal(await accounts.createAccount(first.userId), false, "the account exists");
-	assert.equal(await Account.countDocuments({ ownerId: first.userId }), 1);
+	assert.equal(await getValue("SELECT count(*) FROM accounts WHERE ownerId = ?", [first.userId]), 1);
 });
 
 test("sign-in codes go out through Resend and are stored hashed", async () => {
@@ -46,7 +44,7 @@ test("sign-in codes go out through Resend and are stored hashed", async () => {
 	assert.deepEqual(email.to, [user.email]);
 	assert.match(email.subject, /^\d{6} is your MailCheap code$/);
 	const code = email.subject.slice(0, 6);
-	const stored = await mongoose.connection.db.collection("verifications").findOne({ identifier: `sign-in-otp-${user.email}` });
+	const stored = await getOne("SELECT * FROM verifications WHERE identifier = ?", [`sign-in-otp-${user.email}`]);
 	assert.ok(stored, "the code is waiting to be used");
 	assert.equal(stored.value.includes(code), false, "the code itself isn't in the database");
 });
@@ -103,7 +101,7 @@ test("pages need a session, and open without a plan", async () => {
 	const user = await signIn("unpaid@example.com");
 	const { account } = await as(user, () => auth.requireAccount());
 	assert.equal(String(account._id), String(user.accountId));
-	assert.equal(account.subscriptionStatus, undefined);
+	assert.equal(account.subscriptionStatus, null);
 });
 
 test("signing out ends the session", async () => {

@@ -1,34 +1,30 @@
-import { isValidObjectId } from "mongoose";
 import { notFound } from "next/navigation";
 import CampaignReport from "@/components/CampaignReport";
 import FormCampaign from "@/components/FormCampaign";
-import { scoped } from "@/lib/account-scope";
 import { getAccountSendProblem, hasActiveSubscription, isBlocked } from "@/lib/account-state";
 import { getArchiveUrls } from "@/lib/archive-hosts";
-import { countNewContacts, countStartedCampaigns, sendTimesPipeline } from "@/lib/campaign-queries";
+import { countNewContacts, countStartedCampaigns, listSendTimes } from "@/lib/campaign-queries";
 import { isSendingEnabled } from "@/lib/config";
-import { MESSAGE_STATS_GROUP } from "@/lib/message-stats";
+import { getAll, getOne, getValue } from "@/lib/db";
+import { MESSAGE_STATS_SQL } from "@/lib/message-stats";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { getWarmup } from "@/lib/send-spread";
 import { serialize } from "@/lib/serialize";
 import { loadSender } from "@/lib/sender";
 import { countEmailsInFlight, getUsage } from "@/lib/usage";
-import Campaign from "@/models/Campaign";
-import Contact from "@/models/Contact";
-import Message from "@/models/Message";
-import Newsletter from "@/models/Newsletter";
+import { isObjectIdString } from "@/lib/validation";
 
 export const metadata = { title: "Campaign" };
 
 export default async function CampaignPage({ params }) {
 	const [{ id }, view] = await Promise.all([params, getSelectedNewsletter()]);
 	const { user, account } = view;
-	if (!isValidObjectId(id)) notFound();
+	if (!isObjectIdString(id)) notFound();
 
-	const campaign = await Campaign.findOne(scoped(account, { _id: id })).lean();
+	const campaign = await getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [account._id, id.toLowerCase()]);
 	if (!campaign) notFound();
 	openNewsletter(view, campaign.newsletterId, `/campaigns/${id}`);
-	const newsletter = await Newsletter.findOne(scoped(account, { _id: campaign.newsletterId })).lean();
+	const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [account._id, campaign.newsletterId]);
 	if (!newsletter) notFound();
 	const plan = await getPlanState(account);
 
@@ -50,7 +46,7 @@ export default async function CampaignPage({ params }) {
 	}
 
 	const [audienceCount, sender, sendTimes, place, newContacts] = await Promise.all([
-		Contact.countDocuments(scoped(account, { newsletterId: newsletter._id, status: "active" })),
+		countActiveContacts(account._id, newsletter._id),
 		loadSender(account, newsletter),
 		getSendTimes(campaign),
 		countStartedCampaigns(account),
@@ -96,10 +92,8 @@ async function getPlanState(account) {
 // A newsletter's first issue borrows the times the account's other newsletters go out.
 async function getSendTimes(campaign) {
 	const { accountId } = campaign;
-	const own = await Campaign.aggregate(
-		sendTimesPipeline({ accountId, newsletterId: campaign.newsletterId, excludeId: campaign._id })
-	);
-	const rows = own.length > 0 ? own : await Campaign.aggregate(sendTimesPipeline({ accountId, excludeId: campaign._id }));
+	const own = await listSendTimes({ accountId, newsletterId: campaign.newsletterId, excludeId: campaign._id });
+	const rows = own.length > 0 ? own : await listSendTimes({ accountId, excludeId: campaign._id });
 	return {
 		history: rows.map(({ at }) => at.toISOString()),
 		taken: own.filter(({ status }) => status === "scheduled").map(({ at }) => at.toISOString()),
@@ -110,20 +104,20 @@ async function getSendTimes(campaign) {
 // left after receiving it make this a little low, and the send itself skips everyone who has it.
 async function countRemaining(campaign) {
 	if (campaign.status !== "sent" || !campaign.audienceLimit) return 0;
-	const active = await Contact.countDocuments({
-		accountId: campaign.accountId,
-		newsletterId: campaign.newsletterId,
-		status: "active",
-	});
+	const active = await countActiveContacts(campaign.accountId, campaign.newsletterId);
 	const reached = (campaign.stats?.recipients ?? 0) + (campaign.lastChance?.recipients ?? 0);
 	return Math.max(0, active - reached);
 }
 
-async function getProviderBreakdown(campaign) {
-	const rows = await Message.aggregate([
-		{ $match: { accountId: campaign.accountId, campaignId: campaign._id, kind: "campaign" } },
-		{ $group: { _id: { $ifNull: ["$provider", "other"] }, ...MESSAGE_STATS_GROUP } },
-		{ $sort: { sent: -1 } },
-	]);
-	return rows.filter(({ sent }) => sent > 0).map(({ _id, ...row }) => ({ provider: _id, ...row }));
+function countActiveContacts(accountId, newsletterId) {
+	return getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND newsletterId = ? AND status = 'active'", [accountId, newsletterId]);
+}
+
+function getProviderBreakdown(campaign) {
+	return getAll(
+		`SELECT coalesce(provider, 'other') AS provider, ${MESSAGE_STATS_SQL} FROM messages
+		WHERE accountId = ? AND campaignId = ? AND kind = 'campaign' GROUP BY coalesce(provider, 'other')
+		HAVING sum(sentAt IS NOT NULL) > 0 ORDER BY sent DESC`,
+		[campaign.accountId, campaign._id]
+	);
 }

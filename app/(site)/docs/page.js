@@ -9,6 +9,10 @@ import { getDocsPageMetadata } from "@/lib/docs/llms";
 import { getClaudeCodeCommand, getMcpUrl } from "@/lib/docs/mcp-clients";
 import { getEndpointGroups } from "@/lib/docs/reference";
 
+// Rendered when asked: APP_URL is set where the Worker runs, not where it's built, so a build-time render would
+// carry the wrong address.
+export const dynamic = "force-dynamic";
+
 export const metadata = getDocsPageMetadata("/docs");
 
 export default function DocsPage() {

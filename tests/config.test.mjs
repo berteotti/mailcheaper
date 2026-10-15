@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getAdminEmails, getConfigProblems, isEmailAllowed } from "../lib/config.js";
+import { getAdminEmails, getConfigProblems, getRateLimitOverrides, isEmailAllowed } from "../lib/config.js";
 import { register } from "../instrumentation.js";
 
 const STRONG = { BETTER_AUTH_SECRET: "s".repeat(32) };
@@ -88,4 +88,10 @@ test("ADMIN_EMAILS is a comma-separated list, trimmed and lowercased", () => {
 		if (previous === undefined) delete process.env.ADMIN_EMAILS;
 		else process.env.ADMIN_EMAILS = previous;
 	}
+});
+
+test("RATE_LIMITS sets actions' limits by name, and ignores what isn't a whole number above 0", () => {
+	const overrides = getRateLimitOverrides({ RATE_LIMITS: " Add_Domain = 50, send_test_email=100, upload_image=0, create_api_key=ten, check_domain=2.5, =4, list_domains" });
+	assert.deepEqual([...overrides], [["add_domain", 50], ["send_test_email", 100]]);
+	assert.equal(getRateLimitOverrides({}).size, 0);
 });

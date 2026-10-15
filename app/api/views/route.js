@@ -1,7 +1,6 @@
-import { connectDb } from "@/lib/db";
+import { execute } from "@/lib/db";
 import { getClientIp, isRateLimited } from "@/lib/rate-limit";
 import { isObjectIdString } from "@/lib/validation";
-import Campaign from "@/models/Campaign";
 
 const BOT_PATTERN = /bot|crawl|spider|slurp|preview|facebookexternalhit|headless|lighthouse|curl|wget|python|axios|go-http/i;
 const RATE_LIMIT = { name: "views", limit: 30, window: "10 m" };
@@ -18,10 +17,8 @@ export async function POST(request) {
 	if (!isObjectIdString(id) || !userAgent || BOT_PATTERN.test(userAgent)) return noContent();
 	if (await isRateLimited({ ...RATE_LIMIT, key: getClientIp(request.headers) })) return noContent();
 
-	await connectDb();
-	await Campaign.updateOne(
-		{ _id: id, archiveSlug: { $type: "string" }, status: { $in: ["sending", "paused", "sent"] } },
-		{ $inc: { webViews: 1 } }
-	).setOptions({ crossAccount: true });
+	// By the issue's unique id: views count whatever the account.
+	await execute(`UPDATE campaigns SET webViews = webViews + 1, updatedAt = ?
+		WHERE _id = lower(?) AND archiveSlug IS NOT NULL AND status IN ('sending', 'paused', 'sent')`, [Date.now(), id]);
 	return noContent();
 }

@@ -1,39 +1,25 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import mongoose from "mongoose";
-import { activate, addVerifiedDomain, as, callApi, catchRedirect, form, jsonRequest, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { execute, getAll, getOne, getValue } from "../lib/db.js";
+import { insertRow, updateRows } from "../lib/records.js";
+import { env as bindings } from "./helpers/bindings.mjs";
+import { activate, addVerifiedDomain, as, callApi, catchRedirect, findAccount, form, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { POSTSHIBA_ENV, createFakePostshiba } from "./helpers/postshiba.mjs";
-import { invalidations, refusedDistributions } from "./stubs/cloudfront.mjs";
 import { RedirectError } from "./stubs/next-navigation.mjs";
-import { published } from "./stubs/qstash.mjs";
-import { deleted as deletedObjects, objects, refusedDeletes } from "./stubs/s3.mjs";
 import { state as ses } from "./stubs/ses.mjs";
-import { deleted as deletedBlobs } from "./stubs/vercel-blob.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 
-// Deleting an account from its page, through the real actions and the purge job, with QStash, SES, S3, CloudFront and
-// Vercel in memory: what blocks it, the code it takes, what stops at once, restoring it, and what the purge removes and
-// keeps.
-const S3 = {
-	IMAGES_S3_BUCKET: "mailcheap-images-test",
-	IMAGES_S3_ACCESS_KEY_ID: "images-key-id",
-	IMAGES_S3_SECRET_ACCESS_KEY: "images-secret",
-	IMAGES_CDN_URL: "https://cdn.example.com",
-	IMAGES_CLOUDFRONT_DISTRIBUTION_ID: "E2TESTDISTRIBUTION",
-};
+// Deleting an account from its page, through the real actions and the purge job, with the outbox, SES and R2 in
+// memory: what blocks it, the code it takes, what stops at once, restoring it, and what the purge removes and keeps.
 const DELETION_SUBJECT = /^(\d{6}) is your code to delete your MailCheap account$/;
 const BLOCKED = { error: "Your account can't be deleted yet. This page says what to do first." };
 const WRONG_CODE = { error: "This code is wrong or expired" };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
-const OAUTH_COLLECTIONS = ["oauthConsent", "oauthAccessToken", "oauthRefreshToken"];
+const OAUTH_TABLES = ["oauthConsent", "oauthAccessToken", "oauthRefreshToken"];
 
 let app;
 let m;
-
-function collection(name) {
-	return mongoose.connection.db.collection(name);
-}
 
 async function sendCode(user) {
 	assert.deepEqual(await as(user, () => m.account.sendDeletionCode()), { sent: true });
@@ -53,25 +39,30 @@ async function deleteAccount(user) {
 	assert.deepEqual(await deleteWith(user, { code: await sendCode(user) }), { redirect: "/signin?deleted=1" });
 }
 
-function findPurgeJob(user) {
-	return published.findLast(({ url, body }) => url.endsWith("/api/jobs/purge-account") && body.accountId === String(user.accountId));
+// The account's latest purge job in the outbox.
+async function findPurgeJob(user) {
+	const job = await getOne(
+		"SELECT * FROM job_outbox WHERE kind = 'purge-account' AND json_extract(payload, '$.accountId') = ? ORDER BY createdAt DESC, rowid DESC LIMIT 1",
+		[String(user.accountId)]
+	);
+	return job && { ...job, body: JSON.parse(job.payload) };
 }
 
-async function runPurgeJob(body) {
-	const response = await m.purgeRoute.POST(jsonRequest("http://localhost:3000/api/jobs/purge-account", { method: "POST", body }));
-	return response.json();
+// What the queue consumer calls for a "purge-account" job.
+function runPurgeJob(body) {
+	return m.purge.runPurge(body);
 }
 
 // The grace period over: the account's purge time moves to the past, and the job for that time runs.
 async function purgeNow(user) {
 	const purgeAt = new Date(Date.now() - 1000);
-	await m.Account.updateOne({ _id: user.accountId }, { $set: { "deletion.purgeAt": purgeAt } });
+	await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "deletion.purgeAt": purgeAt } });
 	return runPurgeJob({ accountId: String(user.accountId), purgeAt: purgeAt.toISOString() });
 }
 
 // What Stripe's webhook writes once the plan is canceled in the billing portal.
 function cancelPlan(user) {
-	return m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+	return execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 }
 
 async function createNewsletter(user, slug) {
@@ -90,6 +81,10 @@ async function createCampaign(user, subject = "Issue") {
 	return id;
 }
 
+function setCampaign(user, id, set) {
+	return updateRows("campaigns", { where: "accountId = ? AND _id = ?", params: [user.accountId, id] }, { set });
+}
+
 async function uploadImage(user) {
 	const request = new Request("http://localhost:3000/api/uploads", { method: "POST", headers: { "content-type": "image/png", "x-file-name": "cover" }, body: PNG });
 	const response = await as(user, () => m.uploadsRoute.POST(request));
@@ -97,21 +92,60 @@ async function uploadImage(user) {
 	return (await response.json()).url;
 }
 
-function connectApp(user, clientId = "app-client") {
-	const owned = { clientId, userId: user.userId, createdAt: new Date() };
-	return Promise.all([
-		collection("oauthConsent").insertOne({ ...owned, scopes: ["mailcheap:full"] }),
-		collection("oauthAccessToken").insertOne({ ...owned, token: `at-${clientId}-${user.userId}` }),
-		collection("oauthRefreshToken").insertOne({ ...owned, token: `rt-${clientId}-${user.userId}` }),
+// Better Auth's rows for an app the user connected: the app, its consent and its tokens.
+async function connectApp(user, clientId = "app-client") {
+	const now = new Date().toISOString();
+	const later = new Date(Date.now() + DAY_MS).toISOString();
+	await execute("INSERT OR IGNORE INTO oauthClient (id, clientId, redirectUris, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)", [
+		`client-${clientId}`,
+		clientId,
+		JSON.stringify(["https://app.example/callback"]),
+		now,
+		now,
+	]);
+	const id = `${clientId}-${user.userId}`;
+	await execute("INSERT INTO oauthConsent (id, clientId, userId, scopes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)", [
+		`consent-${id}`,
+		clientId,
+		user.userId,
+		JSON.stringify(["mailcheap:full"]),
+		now,
+		now,
+	]);
+	await execute("INSERT INTO oauthRefreshToken (id, token, clientId, userId, expiresAt, createdAt, scopes) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+		`refresh-${id}`,
+		`rt-${id}`,
+		clientId,
+		user.userId,
+		later,
+		now,
+		"mailcheap:full",
+	]);
+	await execute("INSERT INTO oauthAccessToken (id, token, clientId, userId, expiresAt, createdAt, scopes) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+		`access-${id}`,
+		`at-${id}`,
+		clientId,
+		user.userId,
+		later,
+		now,
+		"mailcheap:full",
 	]);
 }
 
 // A paying customer with one of everything: Google as a sign-in method, a newsletter on the shared address, contacts
-// from an import, a campaign with a test sent, a verified domain, an image on S3, an API key, a connected app, problem
+// from an import, a campaign with a test sent, a verified domain, an image on R2, an API key, a connected app, problem
 // events, suppressions and an alert.
 async function customer(email, slug) {
 	const user = await signIn(email);
-	await collection("auth_accounts").insertOne({ userId: user.userId, providerId: "google", accountId: `google-${slug}`, createdAt: new Date(), updatedAt: new Date() });
+	const now = new Date().toISOString();
+	await execute("INSERT INTO auth_accounts (id, userId, providerId, accountId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)", [
+		`google-${slug}`,
+		user.userId,
+		"google",
+		`google-${slug}`,
+		now,
+		now,
+	]);
 	await activate(user);
 	await createNewsletter(user, slug);
 	await as(user, () =>
@@ -131,29 +165,47 @@ async function customer(email, slug) {
 	user.imageUrl = await uploadImage(user);
 	user.apiKey = (await as(user, () => m.apiKeys.createApiKey(null, form({ name: "Site", level: "full" })))).key;
 	await connectApp(user);
-	await m.Event.create({ accountId: user.accountId, type: "bounce", email: `reader@${slug}.org` });
-	await m.Suppression.create({ accountId: user.accountId, email: `gone@${slug}.org`, reason: "bounce" });
-	await m.Alert.create({ accountId: user.accountId, key: `test-${slug}`, title: "Test", lastSentAt: new Date() });
-	user.account = await m.Account.findById(user.accountId).lean();
+	await insertRow("events", { accountId: user.accountId, type: "bounce", email: `reader@${slug}.org`, occurredAt: new Date() });
+	await insertRow("suppressions", { accountId: user.accountId, email: `gone@${slug}.org`, reason: "bounce" });
+	await insertRow("alerts", { accountId: user.accountId, key: `test-${slug}`, title: "Test", lastSentAt: new Date() });
+	user.account = await findAccount(user.accountId);
 	return user;
 }
 
-const ACCOUNT_MODELS = ["Newsletter", "Contact", "ContactImport", "Campaign", "Message", "Event", "Suppression", "Upload", "Domain", "ApiKey", "Alert"];
+// Each table an account's rows are in, by the name upstream's model had.
+const ACCOUNT_TABLES = {
+	Newsletter: "newsletters",
+	Contact: "contacts",
+	ContactImport: "contact_imports",
+	Campaign: "campaigns",
+	Message: "messages",
+	Event: "events",
+	Suppression: "suppressions",
+	Upload: "uploads",
+	Domain: "domains",
+	ApiKey: "api_keys",
+	Alert: "alerts",
+};
+
+function countRows(table, where, params) {
+	return getValue(`SELECT count(*) FROM ${table} WHERE ${where}`, params);
+}
 
 async function countData(user) {
 	const counts = {};
-	for (const name of ACCOUNT_MODELS) counts[name] = await m[name].countDocuments({ accountId: user.accountId });
-	const owned = { userId: user.userId };
-	for (const name of OAUTH_COLLECTIONS) counts[name] = await collection(name).countDocuments(owned);
-	counts.sessions = await collection("sessions").countDocuments(owned);
-	counts.signInMethods = await collection("auth_accounts").countDocuments(owned);
-	counts.user = await collection("users").countDocuments({ _id: user.userId });
-	counts.account = await m.Account.countDocuments({ _id: user.accountId });
+	for (const [name, table] of Object.entries(ACCOUNT_TABLES)) counts[name] = await countRows(table, "accountId = ?", [user.accountId]);
+	for (const table of OAUTH_TABLES) counts[table] = await countRows(table, "userId = ?", [user.userId]);
+	counts.sessions = await countRows("sessions", "userId = ?", [user.userId]);
+	counts.signInMethods = await countRows("auth_accounts", "userId = ?", [user.userId]);
+	counts.user = await countRows("users", "id = ?", [user.userId]);
+	counts.account = await countRows("accounts", "_id = ?", [user.accountId]);
 	return counts;
 }
 
+const hasObject = (key) => bindings.ASSETS_BUCKET.objects.has(key);
+
 before(async () => {
-	app = await startTestApp({ ...S3, QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		account: await import("../app/(account)/account/actions.js"),
 		restore: await import("../app/restore/actions.js"),
@@ -164,7 +216,7 @@ before(async () => {
 		domains: await import("../app/(app)/domains/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		uploadsRoute: await import("../app/api/uploads/route.js"),
-		purgeRoute: await import("../app/api/jobs/purge-account/route.js"),
+		purge: await import("../lib/account-purge.js"),
 		auth: await import("../lib/auth.js"),
 		deletion: await import("../lib/account-deletion.js"),
 		state: await import("../lib/account-state.js"),
@@ -173,19 +225,6 @@ before(async () => {
 		publicNewsletters: await import("../lib/public-newsletters.js"),
 		sending: await import("../lib/sending.js"),
 		registry: await import("../lib/actions/registry.js"),
-		Account: (await import("../models/Account.js")).default,
-		Alert: (await import("../models/Alert.js")).default,
-		ApiKey: (await import("../models/ApiKey.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		ContactImport: (await import("../models/ContactImport.js")).default,
-		DeletionRecord: (await import("../models/DeletionRecord.js")).default,
-		Domain: (await import("../models/Domain.js")).default,
-		Event: (await import("../models/Event.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
-		Suppression: (await import("../models/Suppression.js")).default,
-		Upload: (await import("../models/Upload.js")).default,
 	};
 });
 
@@ -204,10 +243,10 @@ describe("what blocks a deletion", () => {
 			assert.equal(platformEmails.length, emails, "no code sent");
 			assert.deepEqual(await deleteWith(user, { code: codeBeforePlan }), BLOCKED, subscriptionStatus);
 		}
-		assert.equal((await m.Account.findById(user.accountId).lean()).deletion, undefined);
+		assert.deepEqual((await findAccount(user.accountId)).deletion, {});
 
 		await cancelPlan(user);
-		assert.equal(await m.deletion.getDeletionBlockers(await m.Account.findById(user.accountId).lean()), null);
+		assert.equal(await m.deletion.getDeletionBlockers(await findAccount(user.accountId)), null);
 		assert.deepEqual(await deleteWith(user, { code: codeBeforePlan }), { redirect: "/signin?deleted=1" }, "the code wasn't used up while blocked");
 	});
 
@@ -217,10 +256,10 @@ describe("what blocks a deletion", () => {
 		const scheduled = await createCampaign(user, "Next week");
 		const sending = await createCampaign(user, "Going out");
 		const others = await Promise.all(["Draft", "Paused", "Sent"].map((subject) => createCampaign(user, subject)));
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: scheduled }, { $set: { status: "scheduled", scheduledAt: new Date(Date.now() + DAY_MS) } });
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: sending }, { $set: { status: "sending" } });
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: others[1] }, { $set: { status: "paused" } });
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: others[2] }, { $set: { status: "sent", sentAt: new Date() } });
+		await setCampaign(user, scheduled, { status: "scheduled", scheduledAt: new Date(Date.now() + DAY_MS) });
+		await setCampaign(user, sending, { status: "sending" });
+		await setCampaign(user, others[1], { status: "paused" });
+		await setCampaign(user, others[2], { status: "sent", sentAt: new Date() });
 
 		const blockers = await m.deletion.getDeletionBlockers(user.account);
 		assert.equal(blockers.hasPlan, false);
@@ -231,7 +270,7 @@ describe("what blocks a deletion", () => {
 		assert.deepEqual(await as(user, () => m.campaigns.pauseCampaign(sending)), { ok: true });
 		assert.deepEqual(await as(user, () => m.campaigns.unscheduleCampaign(scheduled)), { ok: true });
 		await cancelPlan(user);
-		assert.equal(await m.deletion.getDeletionBlockers(await m.Account.findById(user.accountId).lean()), null);
+		assert.equal(await m.deletion.getDeletionBlockers(await findAccount(user.accountId)), null);
 		await deleteAccount(user);
 	});
 });
@@ -251,14 +290,14 @@ describe("the confirmation", () => {
 		const email = platformEmails.at(-1);
 		assert.deepEqual(email.to, [user.email]);
 		assert.match(email.text, /If you didn't ask for it, don't share it/);
-		const stored = await collection("verifications").findOne({ identifier: `email-verification-otp-${user.email}` });
+		const stored = await getOne("SELECT * FROM verifications WHERE identifier = ?", [`email-verification-otp-${user.email}`]);
 		assert.equal(stored.value.includes(code), false, "stored hashed");
 
 		assert.deepEqual(await deleteWith(user, { code, email: "code@example.org" }), { error: "Type your email address to confirm" });
 		assert.deepEqual(await deleteWith(user, { code: "12345" }), { error: "Enter the 6-digit code" });
-		await collection("verifications").updateOne({ _id: stored._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+		await execute("UPDATE verifications SET expiresAt = ? WHERE id = ?", [new Date(Date.now() - 1000).toISOString(), stored.id]);
 		assert.deepEqual(await deleteWith(user, { code }), WRONG_CODE, "expired after 5 minutes");
-		assert.equal((await m.Account.findById(user.accountId).lean()).deletion, undefined);
+		assert.deepEqual((await findAccount(user.accountId)).deletion, {});
 
 		const fresh = await sendCode(user);
 		assert.deepEqual(await deleteWith(user, { code: fresh, email: "  Code@Example.com " }), { redirect: "/signin?deleted=1" });
@@ -294,7 +333,7 @@ describe("a deleted account", () => {
 		await connectApp(user);
 		await connectApp(bystander);
 		await cancelPlan(user);
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
 		assert.ok(await withEnv({ MAILCHEAP_CLOUD: "" }, () => m.publicNewsletters.findOpenNewsletter({ slug: user.slug })), "open before");
 
 		const before = Date.now();
@@ -303,13 +342,13 @@ describe("a deleted account", () => {
 		assert.equal(await as(user, () => m.auth.getCurrentAccount()), null, "signed out here");
 		assert.equal(await as(otherDevice, () => m.auth.getCurrentAccount()), null, "and on the other device");
 		assert.equal((await callApi("GET", "/api/v1/newsletters", { key })).status, 401);
-		assert.ok((await m.ApiKey.findOne({ accountId: user.accountId }).lean()).revokedAt, "the key is revoked");
-		for (const name of OAUTH_COLLECTIONS) {
-			assert.equal(await collection(name).countDocuments({ userId: user.userId }), 0, name);
-			assert.equal(await collection(name).countDocuments({ userId: bystander.userId }), 1, `someone else's ${name} stays`);
+		assert.ok((await getOne("SELECT revokedAt FROM api_keys WHERE accountId = ?", [user.accountId])).revokedAt, "the key is revoked");
+		for (const table of OAUTH_TABLES) {
+			assert.equal(await countRows(table, "userId = ?", [user.userId]), 0, table);
+			assert.equal(await countRows(table, "userId = ?", [bystander.userId]), 1, `someone else's ${table} stays`);
 		}
 
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await findAccount(user.accountId);
 		assert.equal(m.state.isDeletionPending(account), true);
 		assert.equal(m.state.getAccountStatus(account), "deleting");
 		for (const cloud of ["true", ""]) {
@@ -317,21 +356,30 @@ describe("a deleted account", () => {
 				assert.equal(m.state.hasActiveSubscription(account), false, `MAILCHEAP_CLOUD=${cloud}`);
 				assert.equal(await m.publicNewsletters.findOpenNewsletter({ slug: user.slug }), null, "no more signups");
 				assert.equal(await m.archive.getArchiveNewsletter(user.slug), null, "the archive is offline");
-				const contact = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email: `late-${cloud || "self"}@example.org` });
+				const contact = await insertRow("contacts", {
+					accountId: user.accountId,
+					newsletterId: user.newsletterId,
+					email: `late-${cloud || "self"}@example.org`,
+					subscribedAt: new Date(),
+				});
 				const welcome = { ...newsletter, welcome: { enabled: true, subject: "Hi", markdown: "Welcome" } };
 				assert.deepEqual(await m.sending.queueWelcomeEmail({ newsletter: welcome, contact }), { skipped: "no active plan" });
 			});
 		}
 
-		const job = findPurgeJob(user);
+		const job = await findPurgeJob(user);
 		const purgeAt = new Date(job.body.purgeAt).getTime();
 		assert.ok(Math.abs(purgeAt - (before + 30 * DAY_MS)) < 60_000, "purged in 30 days");
 		assert.equal(new Date(account.deletion.purgeAt).getTime(), purgeAt);
-		assert.ok(job.notBefore * 1000 <= before + 7 * DAY_MS, "QStash holds a job 7 days at most, so it wakes up on the way");
-		assert.deepEqual(await runPurgeJob(job.body), { waiting: true });
-		assert.equal(findPurgeJob(user).body.purgeAt, job.body.purgeAt, "and waits again for the same time");
+		assert.equal(job.availableAt.getTime(), purgeAt, "the outbox keeps the job until then");
+		assert.equal(job.publishedAt, null, "and doesn't hand it to the queue before");
+		assert.deepEqual(await runPurgeJob(job.body), { waiting: true }, "delivered early, it does nothing");
+		const again = await findPurgeJob(user);
+		assert.notEqual(again._id, job._id);
+		assert.equal(again.body.purgeAt, job.body.purgeAt, "and waits again for the same time");
+		assert.equal(again.availableAt.getTime(), purgeAt);
 
-		const record = await m.DeletionRecord.findOne({ accountId: user.accountId }).lean();
+		const record = await getOne("SELECT * FROM deletion_records WHERE accountId = ?", [user.accountId]);
 		assert.ok(record.emailHash && record.requestedAt && !record.purgedAt);
 		assert.doesNotMatch(JSON.stringify(record), /stopped/);
 	});
@@ -340,16 +388,16 @@ describe("a deleted account", () => {
 		const user = await signIn("restored@example.com");
 		await createNewsletter(user, "restored-news");
 		await deleteAccount(user);
-		const job = findPurgeJob(user);
+		const job = await findPurgeJob(user);
 
 		const again = await signIn(user.email);
 		assert.equal(await as(again, () => catchRedirect(m.auth.requireAccount())), "/restore", "the dashboard waits for the answer");
 		assert.equal(await as(again, () => catchRedirect(m.restore.restoreDeletedAccount())), "/");
 		const { account } = await as(again, () => m.auth.requireAccount());
 		assert.equal(String(account._id), String(user.accountId), "the same account");
-		assert.equal(account.deletion, undefined);
-		assert.equal(await m.Newsletter.countDocuments({ accountId: user.accountId }), 1, "with its data");
-		assert.equal(await m.DeletionRecord.countDocuments({ accountId: user.accountId }), 0, "it wasn't deleted after all");
+		assert.deepEqual(account.deletion, {});
+		assert.equal(await countRows("newsletters", "accountId = ?", [user.accountId]), 1, "with its data");
+		assert.equal(await countRows("deletion_records", "accountId = ?", [user.accountId]), 0, "it wasn't deleted after all");
 		assert.ok(await withEnv({ MAILCHEAP_CLOUD: "" }, () => m.archive.getArchiveNewsletter(user.slug)), "the archive is back where no plan is needed");
 
 		assert.deepEqual(await runPurgeJob(job.body), { skipped: "not set to be purged at this time" });
@@ -359,7 +407,7 @@ describe("a deleted account", () => {
 	test("once its purge has started, can't be restored", async () => {
 		const user = await signIn("too-late@example.com");
 		await deleteAccount(user);
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { "deletion.purgeStartedAt": new Date() } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "deletion.purgeStartedAt": new Date() } });
 		const again = await signIn(user.email);
 		assert.deepEqual(await as(again, () => m.restore.restoreDeletedAccount()), { error: "Your account is being deleted, so it can't be restored anymore." });
 		assert.equal(await as(again, () => catchRedirect(m.auth.requireAccount())), "/restore");
@@ -367,21 +415,20 @@ describe("a deleted account", () => {
 });
 
 describe("the purge", () => {
-	test("deletes that account's data, at the provider, in DNS and on S3 too, keeps everyone else's, and keeps a deletion record", async () => {
+	test("deletes that account's data, at the provider, in DNS and on R2 too, keeps everyone else's, and keeps a deletion record", async () => {
 		const doomed = await customer("doomed@example.com", "doomed-news");
 		const kept = await customer("kept@example.com", "kept-news");
 		const [doomedNewsletter, keptNewsletter] = await Promise.all(
-			[doomed, kept].map((user) => m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean())
+			[doomed, kept].map((user) => getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]))
 		);
-		const [doomedUpload, keptUpload] = await Promise.all([doomed, kept].map((user) => m.Upload.findOne({ accountId: user.accountId }).lean()));
-		const [doomedDomain, keptDomain] = await Promise.all([doomed, kept].map((user) => m.Domain.findOne({ accountId: user.accountId }).lean()));
+		const [doomedUpload, keptUpload] = await Promise.all([doomed, kept].map((user) => getOne("SELECT * FROM uploads WHERE accountId = ?", [user.accountId])));
+		const [doomedDomain, keptDomain] = await Promise.all([doomed, kept].map((user) => getOne("SELECT * FROM domains WHERE accountId = ?", [user.accountId])));
 		const keptCounts = await countData(kept);
 		assert.deepEqual(Object.keys(keptCounts).filter((name) => keptCounts[name] === 0), [], "one of everything");
-		assert.ok(doomedNewsletter.sharedSender.dnsRecordIds.length > 0 && objects.some(({ Key }) => Key === doomedUpload.pathname));
+		assert.ok(doomedNewsletter.sharedSender.dnsRecordIds.length > 0 && hasObject(doomedUpload.pathname));
 
 		await cancelPlan(doomed);
 		await deleteAccount(doomed);
-		const invalidationCount = invalidations.length;
 		assert.deepEqual(await purgeNow(doomed), { purged: true });
 
 		assert.deepEqual(
@@ -389,17 +436,9 @@ describe("the purge", () => {
 			Object.fromEntries(Object.keys(keptCounts).map((name) => [name, 0])),
 			"nothing of it stays in the database"
 		);
-		assert.equal(await collection("verifications").countDocuments({ identifier: { $regex: doomed.email } }), 0, "nor its codes");
-		assert.ok(deletedObjects.some(({ Key }) => Key === doomedUpload.pathname), "its image is gone from S3");
-		assert.deepEqual(
-			invalidations.slice(invalidationCount).map(({ DistributionId, InvalidationBatch }) => ({ DistributionId, Paths: InvalidationBatch.Paths })),
-			[{ DistributionId: "E2TESTDISTRIBUTION", Paths: { Quantity: 1, Items: [`/accounts/${doomed.accountId}/*`] } }],
-			"and from the CDN's cache, with one invalidation of its folder"
-		);
-		assert.deepEqual(invalidations.at(-1).config, {
-			region: "us-east-1",
-			credentials: { accessKeyId: "images-key-id", secretAccessKey: "images-secret" },
-		});
+		assert.equal(await countRows("account_secrets", "accountId = ?", [doomed.accountId]), 0, "nor its secrets");
+		assert.equal(await countRows("verifications", "identifier LIKE ?", [`%${doomed.email}%`]), 0, "nor its codes");
+		assert.equal(hasObject(doomedUpload.pathname), false, "its image is gone from R2");
 		assert.equal(ses.identities.has(doomedDomain.domain), false, "its domain is gone from SES");
 		assert.equal(ses.identities.has(doomedNewsletter.sharedSender.domain), false, "and its shared address's subdomain");
 		assert.equal(ses.tenants.has(`mc-${doomed.accountId}`), false, "and its tenant");
@@ -407,13 +446,13 @@ describe("the purge", () => {
 		for (const id of doomedNewsletter.sharedSender.dnsRecordIds) assert.equal(dnsRecords.has(id), false, "its DNS records are gone");
 
 		assert.deepEqual(await countData(kept), keptCounts, "everyone else's data stays");
-		assert.ok(objects.some(({ Key }) => Key === keptUpload.pathname));
+		assert.ok(hasObject(keptUpload.pathname));
 		assert.ok(ses.identities.has(keptDomain.domain) && ses.identities.has(keptNewsletter.sharedSender.domain) && ses.tenants.has(`mc-${kept.accountId}`));
 		for (const id of keptNewsletter.sharedSender.dnsRecordIds) assert.ok(dnsRecords.has(id));
 		assert.equal((await callApi("GET", "/api/v1/newsletters", { key: kept.apiKey })).status, 200);
 
-		const record = await m.DeletionRecord.findOne({ accountId: doomed.accountId }).lean();
-		assert.deepEqual(Object.keys(record).sort(), ["__v", "_id", "accountCreatedAt", "accountId", "emailHash", "purgedAt", "requestedAt"]);
+		const record = await getOne("SELECT * FROM deletion_records WHERE accountId = ?", [doomed.accountId]);
+		assert.deepEqual(Object.keys(record).sort(), ["_id", "accountCreatedAt", "accountId", "emailHash", "purgedAt", "requestedAt"]);
 		assert.equal(String(record.accountCreatedAt), String(doomed.account.createdAt));
 		assert.doesNotMatch(JSON.stringify(record), /doomed/, "a hash, never the email or anything the account held");
 
@@ -437,59 +476,41 @@ describe("the purge", () => {
 		assert.equal((await countData(user)).Contact, 2, "nothing deleted");
 		await cancelPlan(user);
 
-		const upload = await m.Upload.findOne({ accountId: user.accountId }).lean();
-		refusedDeletes.add(upload.pathname);
-		const failed = await purgeNow(user);
-		assert.match(failed.postponed, /S3 didn't delete 1 images: AccessDenied/);
-		const retry = findPurgeJob(user);
-		assert.ok(retry.notBefore * 1000 > Date.now() + DAY_MS - 60_000, "tomorrow");
-		assert.equal(await m.Upload.countDocuments({ accountId: user.accountId }), 1, "kept, so the next try deletes the file");
+		const upload = await getOne("SELECT * FROM uploads WHERE accountId = ?", [user.accountId]);
+		const bucket = bindings.ASSETS_BUCKET;
+		const remove = bucket.delete;
+		bucket.delete = async (keys) => {
+			if ([keys].flat().includes(upload.pathname)) throw new Error("R2 refused to delete the object");
+			return remove(keys);
+		};
+		let failed;
+		try {
+			failed = await purgeNow(user);
+		} finally {
+			bucket.delete = remove;
+		}
+		assert.match(failed.postponed, /the purge stopped: R2 refused to delete the object/);
+		const retry = await findPurgeJob(user);
+		assert.ok(retry.availableAt.getTime() > Date.now() + DAY_MS - 60_000, "tomorrow");
+		assert.equal(await countRows("uploads", "accountId = ?", [user.accountId]), 1, "kept, so the next try deletes the file");
 		assert.equal((await countData(user)).user, 0, "the rest went ahead");
 		assert.ok(
 			platformEmails.some(({ to, subject }) => to.includes("admin@example.com") && subject === "[MailCheap] Account purge postponed"),
 			"the admins hear of it"
 		);
 
-		refusedDeletes.clear();
 		assert.deepEqual(await runPurgeJob(retry.body), { purged: true });
 		assert.equal((await countData(user)).Upload, 0);
+		assert.equal(hasObject(upload.pathname), false);
 	});
 
-	test("an invalidation CloudFront refuses is tried again the next day, until the CDN's cache is cleared", async () => {
-		const user = await signIn("cdn-refused@example.com");
+	test("an account with nothing but an image and its sign-in is purged whole, its rows children first", async () => {
+		const user = await signIn("small@example.com");
 		await uploadImage(user);
 		await deleteAccount(user);
-		const path = `/accounts/${user.accountId}/*`;
-
-		refusedDistributions.add(S3.IMAGES_CLOUDFRONT_DISTRIBUTION_ID);
-		const failed = await purgeNow(user);
-		assert.match(failed.postponed, /CloudFront didn't invalidate \/accounts\/\w+\/\*: AccessDenied User is not authorized/);
-		assert.ok(failed.postponed.includes(path));
-		const retry = findPurgeJob(user);
-		assert.ok(retry.notBefore * 1000 > Date.now() + DAY_MS - 60_000, "tomorrow");
-		assert.ok(
-			platformEmails.some(({ to, text }) => to.includes("admin@example.com") && text.includes(`CloudFront didn't invalidate ${path}`)),
-			"the admins hear of it"
-		);
-		assert.equal(await m.Upload.countDocuments({ accountId: user.accountId }), 1);
-
-		refusedDistributions.clear();
-		const count = invalidations.length;
-		assert.deepEqual(await runPurgeJob(retry.body), { purged: true });
-		assert.deepEqual(invalidations.slice(count).map(({ InvalidationBatch }) => InvalidationBatch.Paths.Items), [[path]]);
+		assert.deepEqual(await purgeNow(user), { purged: true });
 		assert.equal((await countData(user)).account, 0);
-	});
-
-	test("without a CloudFront distribution (self-hosted, or images on Vercel Blob), deletes the images and invalidates nothing", async () => {
-		const user = await signIn("no-cdn@example.com");
-		const imageUrl = await withEnv({ IMAGES_S3_BUCKET: "" }, () => uploadImage(user));
-		assert.ok(imageUrl.startsWith("https://blob.example.com/accounts/"));
-		await deleteAccount(user);
-
-		const count = invalidations.length;
-		assert.deepEqual(await withEnv({ IMAGES_CLOUDFRONT_DISTRIBUTION_ID: "" }, () => purgeNow(user)), { purged: true });
-		assert.ok(deletedBlobs.includes(imageUrl), "its image is gone from Vercel Blob");
-		assert.equal(invalidations.length, count);
+		assert.deepEqual(await getAll("SELECT _id FROM uploads WHERE accountId = ?", [user.accountId]), []);
 	});
 
 	test("on PostShiba: the tenant is suspended at once, resumed on restore, and deleted with its domains by the purge", async () => {
@@ -506,7 +527,7 @@ describe("the purge", () => {
 				});
 				await createNewsletter(user, "ps-delete-news");
 				assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain: "ps-delete.dev" }))), { ok: true, domain: "ps-delete.dev" });
-				const { tenantId } = (await m.Account.findById(user.accountId).lean()).postshiba;
+				const { tenantId } = (await findAccount(user.accountId)).postshiba;
 				const tenantDomains = () => [...fake.state.domains.values()].filter((domain) => domain.tenant_id === tenantId).map(({ name }) => name).sort();
 				assert.deepEqual(tenantDomains(), ["ps-delete-news.mailcheapmail.com", "ps-delete.dev"]);
 				await cancelPlan(user);

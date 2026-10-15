@@ -8,9 +8,9 @@ import FormSwitchToDomain from "@/components/FormSwitchToDomain";
 import GatePlan from "@/components/GatePlan";
 import HeaderPage from "@/components/HeaderPage";
 import ImageFavicon from "@/components/ImageFavicon";
-import { scoped } from "@/lib/account-scope";
 import { hasActiveSubscription } from "@/lib/account-state";
-import { getArchiveCnameTarget, getSharedDomain } from "@/lib/config";
+import { getAppHost, getArchiveCnameTarget, getSharedDomain } from "@/lib/config";
+import { getAll } from "@/lib/db";
 import { getDomainSetup, getDomainSummary } from "@/lib/domain-records";
 import { getEmailProvider } from "@/lib/email-provider";
 import { rootDomain } from "@/lib/favicon";
@@ -25,8 +25,6 @@ import {
 import { getSelectedNewsletter } from "@/lib/selected-newsletter";
 import { refreshSharedSender } from "@/lib/shared-sender";
 import { cn } from "@/lib/utils";
-import Domain from "@/models/Domain";
-import Newsletter from "@/models/Newsletter";
 
 export const metadata = { title: "Domains" };
 
@@ -35,8 +33,8 @@ export const metadata = { title: "Domains" };
 export default async function DomainsPage() {
 	const { account, selected } = await getSelectedNewsletter();
 	const [stored, saved] = await Promise.all([
-		Domain.find(scoped(account)).sort({ createdAt: 1 }).lean(),
-		Newsletter.find(scoped(account)).sort({ createdAt: 1, _id: 1 }).select({ name: 1, slug: 1, fromEmail: 1, sharedSender: 1 }).lean(),
+		getAll("SELECT * FROM domains WHERE accountId = ? ORDER BY createdAt, _id", [account._id]),
+		getAll("SELECT _id, name, slug, fromEmail, sharedSender FROM newsletters WHERE accountId = ? ORDER BY createdAt, _id", [account._id]),
 	]);
 	const domains = stored.map((domain) => withActiveProvider(domain));
 	const sharedDomain = getSharedDomain();
@@ -129,7 +127,7 @@ function RowNote({ href, icon, label, detail, end, stagger }) {
 }
 
 function CardDomain({ domain, newsletters, current, sharedDomain, cnameTarget, stagger }) {
-	const summary = getDomainSummary(domain);
+	const summary = getDomainSummary(domain, { cnameTarget });
 	const id = String(domain._id);
 	return (
 		<section style={{ "--stagger": stagger }} className="overflow-hidden rounded-xl bg-card shadow-border animate-enter">
@@ -150,7 +148,7 @@ function CardDomain({ domain, newsletters, current, sharedDomain, cnameTarget, s
 			</div>
 			{current && <RowsSender domain={domain} newsletters={newsletters} current={current} sharedDomain={sharedDomain} />}
 			<ol className="divide-y divide-border/60 border-t border-border/60">
-				{getDomainSetup(domain, { cnameTarget }).map((step) => (
+				{getDomainSetup(domain, { cnameTarget, appHost: getAppHost() }).map((step) => (
 					<li key={step.key} className="flex flex-col gap-3 px-4 py-4">
 						<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
 							<div className="min-w-0 max-w-xl">

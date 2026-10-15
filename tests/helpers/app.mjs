@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import mongoose from "mongoose";
+import { execute, getOne, json } from "../../lib/db.js";
 import { runWithRequest } from "../stubs/next-headers.mjs";
 import { NotFoundError, RedirectError } from "../stubs/next-navigation.mjs";
-import { startMongo } from "./mongo.mjs";
+import { env as bindings } from "./bindings.mjs";
+import { createDatabase } from "./d1.mjs";
 
 // Platform emails sent through Resend's API, newest last.
 export const platformEmails = [];
@@ -35,23 +36,57 @@ export function mockStripe(handler) {
 	stripeHandler = handler;
 }
 
+// An in-memory R2 bucket: objects by key, with their HTTP metadata.
+export function memoryBucket() {
+	const objects = new Map();
+	return {
+		objects,
+		async put(key, value, options = {}) {
+			const body = typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value instanceof ArrayBuffer ? value : await new Response(value).arrayBuffer());
+			objects.set(key, { key, body, httpMetadata: options.httpMetadata ?? {}, size: body.byteLength });
+			return { key };
+		},
+		async get(key) {
+			const object = objects.get(key);
+			return object ? { ...object, arrayBuffer: async () => object.body.buffer, text: async () => new TextDecoder().decode(object.body) } : null;
+		},
+		async head(key) {
+			return objects.get(key) ?? null;
+		},
+		async delete(keys) {
+			for (const key of [keys].flat()) objects.delete(key);
+		},
+		async list({ prefix = "" } = {}) {
+			return { objects: [...objects.values()].filter(({ key }) => key.startsWith(prefix)), truncated: false };
+		},
+	};
+}
+
+// The jobs queue: published job ids, newest last. Tests run jobs by calling the consumer's code.
+export const queued = [];
+
 // MailCheap Cloud by default; a self-hosted server with { MAILCHEAP_CLOUD: "" }.
 export async function startTestApp(env = {}) {
-	const mongo = await startMongo();
+	const db = createDatabase();
+	Object.assign(bindings, {
+		ASSETS_BUCKET: memoryBucket(),
+		BACKUPS_BUCKET: memoryBucket(),
+		JOBS_QUEUE: {
+			async send(body) { queued.push(body); },
+			async sendBatch(messages) { queued.push(...messages.map(({ body }) => body)); },
+		},
+	});
 	Object.assign(process.env, {
 		NODE_ENV: "test",
 		MAILCHEAP_CLOUD: "true",
-		MONGODB_URI: mongo.uri,
 		BETTER_AUTH_SECRET: "test-secret-for-integration-tests-0123456789",
 		APP_URL: "http://localhost:3000",
 		RESEND_API_KEY: "re_test",
 		SENDING_ENABLED: "true",
-		QSTASH_TOKEN: "qstash-test",
 		SEND_RATE_PER_SECOND: "14",
 		STRIPE_SECRET_KEY: "sk_test_mailcheap",
 		STRIPE_WEBHOOK_SECRET: "whsec_test_mailcheap",
 		ADMIN_EMAILS: "admin@example.com",
-		BLOB_READ_WRITE_TOKEN: "blob-test",
 		SHARED_DOMAIN: "mailcheapmail.com",
 		ARCHIVE_CNAME_TARGET: "cname.mailcheap.ai",
 		SES_AWS_ACCOUNT_ID: "111122223333",
@@ -60,18 +95,11 @@ export async function startTestApp(env = {}) {
 		...env,
 	});
 	installFetch();
-	const stop = async () => {
-		await mongoose.disconnect();
-		await mongo.stop();
-	};
-	try {
-		const { connectDb } = await import("../../lib/db.js");
-		await connectDb();
-	} catch (error) {
-		await stop();
-		throw error;
-	}
-	return { stop };
+	return { db, stop: async () => db.close() };
+}
+
+export function findAccount(accountId) {
+	return getOne("SELECT * FROM accounts WHERE _id = ?", [String(accountId)]);
 }
 
 // Runs code with some environment variables changed, and puts them back after.
@@ -133,39 +161,37 @@ export async function signIn(email) {
 	const code = subject.slice(0, 6);
 	assert.equal(await as(user, () => catchRedirect(verifySigninCode(null, form({ email, code, next: "/" })))), "/");
 
-	const Account = (await import("../../models/Account.js")).default;
-	const stored = await mongoose.connection.db.collection("users").findOne({ email: email.toLowerCase() });
-	user.userId = stored._id;
+	const stored = await getOne("SELECT id FROM users WHERE email = ?", [email.toLowerCase()]);
+	user.userId = stored.id;
 	// Past its first 30 days of sending, so sends go out at full speed; tests of spread sends unset it.
-	await Account.updateOne({ ownerId: stored._id }, { $set: { spreadUntil: new Date(0) } });
-	user.account = await Account.findOne({ ownerId: stored._id }).lean();
+	await execute("UPDATE accounts SET spreadUntil = 0 WHERE ownerId = ?", [stored.id]);
+	user.account = await getOne("SELECT * FROM accounts WHERE ownerId = ?", [stored.id]);
 	user.accountId = user.account._id;
 	return user;
 }
 
 // What the Stripe webhook writes for a paid subscription.
 export async function activate(user, { plan = "starter", interval = "month", ...set } = {}) {
-	const Account = (await import("../../models/Account.js")).default;
 	const { addMonths, startUsagePeriod } = await import("../../lib/usage-period.js");
 	const start = new Date();
 	const end = addMonths(start, interval === "year" ? 12 : 1);
-	await Account.updateOne(
-		{ _id: user.accountId },
-		{
-			$set: {
-				plan,
-				interval,
-				subscriptionStatus: "active",
-				stripeCustomerId: `cus_${user.accountId}`,
-				stripeSubscriptionId: `sub_${user.accountId}`,
-				currentPeriodStart: start,
-				currentPeriodEnd: end,
-				usage: startUsagePeriod({ start, end }),
-				...set,
-			},
-		}
-	);
-	user.account = await Account.findById(user.accountId).lean();
+	const values = {
+		plan,
+		interval,
+		subscriptionStatus: "active",
+		stripeCustomerId: `cus_${user.accountId}`,
+		stripeSubscriptionId: `sub_${user.accountId}`,
+		currentPeriodStart: start,
+		currentPeriodEnd: end,
+		usage: startUsagePeriod({ start, end }),
+		...set,
+	};
+	const columns = Object.keys(values);
+	await execute(`UPDATE accounts SET ${columns.map((column) => `${column} = ?`).join(", ")} WHERE _id = ?`, [
+		...columns.map((column) => (values[column] && typeof values[column] === "object" && !(values[column] instanceof Date) ? json(values[column]) : values[column])),
+		user.accountId,
+	]);
+	user.account = await findAccount(user.accountId);
 	return user.account;
 }
 
@@ -174,12 +200,11 @@ export async function addVerifiedDomain(user, domain, { archiveHost = `news.${do
 	const { addDomain, checkDomain } = await import("../../lib/domains.js");
 	const { verifyIdentity } = await import("../stubs/ses.mjs");
 	const { cnames } = await import("../stubs/dns-check.mjs");
-	const Account = (await import("../../models/Account.js")).default;
-	const account = await Account.findById(user.accountId).lean();
+	const account = await findAccount(user.accountId);
 	const added = await addDomain({ account, domain, archiveHost });
 	verifyIdentity(domain);
 	if (isArchiveLive) cnames.set(archiveHost, ["cname.mailcheap.ai"]);
-	user.account = await Account.findById(user.accountId).lean();
+	user.account = await findAccount(user.accountId);
 	return checkDomain({ account: user.account, domainId: added._id });
 }
 

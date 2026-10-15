@@ -1,25 +1,34 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { activate, anonymous, as, callApi, catchRedirect, form, jsonRequest, signIn, startTestApp } from "./helpers/app.mjs";
+import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
-import { published } from "./stubs/qstash.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
 
-// Sends go through the real code: QStash jobs are kept by the stub and run here through the job route,
+// Sends go through the real code: jobs wait in the D1 outbox and run here as the queue consumer runs them,
 // SES sends land in the stub. Accounts get tiny limits so each case sends a handful of emails.
 let app;
 let m;
-let processed = 0;
+const processed = new Set();
+
+async function readDueJobs() {
+	const rows = await m.db.getAll("SELECT _id, kind, payload FROM job_outbox WHERE availableAt <= ? ORDER BY rowid", [Date.now()]);
+	return rows.filter(({ _id }) => !processed.has(_id)).map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
+}
 
 async function runJobs() {
 	const results = [];
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		const route = url.endsWith("/api/jobs/send-batch") ? m.sendBatchRoute : m.scheduledRoute;
-		const response = await route.POST(jsonRequest(url, { method: "POST", body }));
-		results.push(await response.json());
+	for (let jobs = await readDueJobs(); jobs.length > 0; jobs = await readDueJobs()) {
+		for (const { _id, kind, payload } of jobs) {
+			processed.add(_id);
+			results.push(kind === "send" ? await m.sending.runSendJob(payload) : await m.scheduling.runScheduledSend(payload));
+		}
 	}
 	return results;
+}
+
+// Jobs already written are left alone.
+async function skipJobs() {
+	for (const { _id } of await m.db.getAll("SELECT _id FROM job_outbox")) processed.add(_id);
 }
 
 async function setup(email, { emails, subscribers, contacts, welcome = false }) {
@@ -55,12 +64,14 @@ async function draft(user, subject = "Issue") {
 	return id;
 }
 
+const campaignOf = (user, id) => m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id]);
+
 async function usage(user) {
-	return (await m.Account.findById(user.accountId).lean()).usage;
+	return (await m.db.getOne("SELECT usage FROM accounts WHERE _id = ?", [user.accountId])).usage;
 }
 
 async function setUsage(user, emailsSent) {
-	await m.Account.updateOne({ _id: user.accountId }, { $set: { "usage.emailsSent": emailsSent } });
+	await m.records.updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "usage.emailsSent": emailsSent } });
 }
 
 async function createApiKey(user) {
@@ -76,22 +87,20 @@ async function signup(user, email) {
 }
 
 before(async () => {
-	app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		archive: await import("../app/archive/actions.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
-		scheduledRoute: await import("../app/api/jobs/send-scheduled/route.js"),
+		sending: await import("../lib/sending.js"),
+		scheduling: await import("../lib/scheduling.js"),
+		db: await import("../lib/db.js"),
+		records: await import("../lib/records.js"),
 		accounts: await import("../lib/accounts.js"),
 		blocks: await import("../lib/account-blocks.js"),
 		usage: await import("../lib/usage.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Message: (await import("../models/Message.js")).default,
 	};
 });
 
@@ -110,7 +119,7 @@ describe("counting", () => {
 		assert.equal(batch.sent, 3);
 		assert.equal(sesEmails.length - before, 3);
 		assert.equal((await usage(user)).emailsSent, 4);
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "sent");
+		assert.equal((await campaignOf(user, id)).status, "sent");
 	});
 
 	test("welcome emails count, and keep going over the limit, like signups", async () => {
@@ -118,7 +127,7 @@ describe("counting", () => {
 		await setUsage(user, 1);
 		const response = await signup(user, "new-reader@example.org");
 		assert.equal(response.status, 201);
-		const welcome = await m.Message.findOne({ accountId: user.accountId, kind: "welcome" }).lean();
+		const welcome = await m.db.getOne("SELECT * FROM messages WHERE accountId = ? AND kind = 'welcome'", [user.accountId]);
 		assert.equal(welcome.status, "sent");
 		assert.equal((await usage(user)).emailsSent, 2, "over the limit, and counted");
 	});
@@ -134,8 +143,8 @@ describe("blocking", () => {
 			error: "This send needs 4 emails and your plan has 3 left this month. Upgrade to send.",
 			code: "plan_limit_emails",
 		});
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "draft");
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id }), 0, "nothing was queued");
+		assert.equal((await campaignOf(user, id)).status, "draft");
+		assert.equal(await m.db.getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ?", [user.accountId, id]), 0, "nothing was queued");
 
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(id, { audienceLimit: 3 })), { ok: true }, "fewer contacts fit");
 		await runJobs();
@@ -149,7 +158,7 @@ describe("blocking", () => {
 		assert.equal(result.code, "plan_limit_subscribers");
 		assert.equal(result.error, "You have 3 subscribers and your plan allows 2. Upgrade to send.");
 		assert.equal((await signup(user, "still-welcome@example.org")).status, 201);
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId, status: "active" }), 4);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND status = 'active'", [user.accountId]), 4);
 	});
 
 	test("scheduling checks the plan, and a schedule after the reset only checks subscribers", async () => {
@@ -157,7 +166,7 @@ describe("blocking", () => {
 		const id = await draft(user);
 		const soon = new Date(Date.now() + 2 * 3_600_000).toISOString();
 		assert.equal((await as(user, () => m.campaigns.scheduleCampaign(id, { scheduledAt: soon }))).code, "plan_limit_emails");
-		const { usage: current } = await m.Account.findById(user.accountId).lean();
+		const current = await usage(user);
 		const afterReset = new Date(current.periodEnd.getTime() + 3_600_000).toISOString();
 		assert.deepEqual(await as(user, () => m.campaigns.scheduleCampaign(id, { scheduledAt: afterReset })), { ok: true });
 	});
@@ -167,16 +176,13 @@ describe("blocking", () => {
 		const id = await draft(user);
 		const at = new Date(Date.now() + 3_600_000);
 		assert.deepEqual(await as(user, () => m.campaigns.scheduleCampaign(id, { scheduledAt: at.toISOString() })), { ok: true });
-		published.length = processed;
+		await skipJobs();
 		await setUsage(user, 10);
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: id }, { $set: { scheduledAt: new Date(Date.now() + 10_000) } });
-		const { scheduledAt } = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
-		const response = await m.scheduledRoute.POST(
-			jsonRequest("/api/jobs/send-scheduled", { method: "POST", body: { accountId: String(user.accountId), campaignId: id, scheduledAt: scheduledAt.toISOString() } })
-		);
-		const result = await response.json();
+		await m.db.execute("UPDATE campaigns SET scheduledAt = ? WHERE accountId = ? AND _id = ?", [new Date(Date.now() + 10_000), user.accountId, id]);
+		const { scheduledAt } = await campaignOf(user, id);
+		const result = await m.scheduling.runScheduledSend({ accountId: String(user.accountId), campaignId: id, scheduledAt: scheduledAt.toISOString() });
 		assert.equal(result.code, "plan_limit_emails");
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "draft");
+		assert.equal((await campaignOf(user, id)).status, "draft");
 	});
 
 	test("emails another send is still sending count against the next one", async () => {
@@ -196,20 +202,20 @@ describe("blocking", () => {
 		await setUsage(user, 2);
 		const [batch] = await runJobs();
 		assert.equal(batch.sent, 2);
-		let campaign = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+		let campaign = await campaignOf(user, id);
 		assert.equal(campaign.status, "paused");
 		assert.equal(campaign.pauseCode, "plan_limit_emails");
 		assert.equal(campaign.pauseReason, "this month's emails are used up");
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id, status: "queued" }), 2);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ? AND status = 'queued'", [user.accountId, id]), 2);
 		assert.equal((await usage(user)).emailsSent, 4, "never past the limit");
 
 		assert.equal((await as(user, () => m.campaigns.resumeCampaign(id))).code, "plan_limit_emails");
 		await m.accounts.setLimitOverrides(user.accountId, { emailsPerMonth: 10, subscribers: 100 });
 		assert.deepEqual(await as(user, () => m.campaigns.resumeCampaign(id)), { ok: true });
 		await runJobs();
-		campaign = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+		campaign = await campaignOf(user, id);
 		assert.equal(campaign.status, "sent");
-		assert.equal(campaign.pauseCode, undefined);
+		assert.equal(campaign.pauseCode, null);
 		assert.equal(campaign.stats.sent, 4);
 		assert.equal((await usage(user)).emailsSent, 6);
 	});
@@ -223,7 +229,7 @@ describe("blocked and canceled accounts", () => {
 		await m.blocks.blockAccount(user.accountId, { reason: "Review" });
 		const [batch] = await runJobs();
 		assert.equal(batch.sent, 0);
-		const campaign = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+		const campaign = await campaignOf(user, id);
 		assert.equal(campaign.status, "paused");
 		assert.equal(campaign.pauseCode, "account_blocked");
 		assert.equal(campaign.pauseReason, "the account is blocked");
@@ -233,15 +239,15 @@ describe("blocked and canceled accounts", () => {
 	test("a canceled account takes no signups and sends no signup emails; its archive is offline", async () => {
 		const user = await setup("canceled@example.com", { emails: 100, subscribers: 100, contacts: 1, welcome: true });
 		await createApiKey(user);
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+		await m.db.execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 		assert.equal((await signup(user, "too-late@example.org")).status, 402);
 		const formResult = await anonymous(() => m.archive.subscribe(null, form({ newsletter: user.slug, email: "visitor@example.org" })));
 		assert.deepEqual(formResult, { error: "This newsletter is not taking signups" });
 		const { getArchiveNewsletter } = await import("../lib/archive-data.js");
 		assert.equal(await getArchiveNewsletter(user.slug), null);
 
-		const newsletter = await (await import("../models/Newsletter.js")).default.findOne({ accountId: user.accountId }).lean();
-		const reader = await m.Contact.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await m.db.getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
+		const reader = await m.db.getOne("SELECT * FROM contacts WHERE accountId = ?", [user.accountId]);
 		const { queueWelcomeEmail } = await import("../lib/sending.js");
 		assert.deepEqual(await queueWelcomeEmail({ newsletter, contact: { ...reader, status: "active" } }), { skipped: "no active plan" });
 	});
@@ -253,8 +259,8 @@ describe("yearly plans", () => {
 		const start = new Date(Date.now() - 45 * 86_400_000);
 		const { startUsagePeriod, addMonths } = await import("../lib/usage-period.js");
 		const usageFields = { ...startUsagePeriod({ start, end: addMonths(start, 12) }), emailsSent: 80 };
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { interval: "year", usage: usageFields } });
-		const account = await m.Account.findById(user.accountId).lean();
+		await m.records.updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { interval: "year", usage: usageFields } });
+		const account = await m.db.getOne("SELECT * FROM accounts WHERE _id = ?", [user.accountId]);
 		const current = await m.usage.getUsage(account);
 		assert.equal(current.emailsSent, 0);
 		assert.ok(current.periodStart > start && current.periodStart <= new Date());

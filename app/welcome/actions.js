@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import { runDashboardAction, toFormError } from "@/lib/actions/dashboard";
 import { requireAccount } from "@/lib/auth";
 import { LIST_SIZES, LIST_SOURCES, findFreeSlug, needsOnboarding } from "@/lib/onboarding";
+import { updateRows } from "@/lib/records";
 import { siteExtensions } from "@/lib/site-extensions";
-import Account from "@/models/Account";
 
 function readText(formData, key) {
 	return String(formData.get(key) ?? "").trim();
@@ -36,10 +36,11 @@ export async function completeOnboarding(_state, formData) {
 
 	const listSize = readChoice(formData, "listSize", LIST_SIZES.map(({ id }) => id));
 	const listSource = listSize && listSize !== "none" ? readChoice(formData, "listSource", LIST_SOURCES) : null;
-	await Account.updateOne(
-		{ _id: account._id },
+	await updateRows(
+		"accounts",
+		{ where: "_id = ?", params: [account._id] },
 		{
-			$set: {
+			set: {
 				"onboarding.completedAt": new Date(),
 				...(listSize && { "onboarding.listSize": listSize }),
 				...(listSource && { "onboarding.listSource": listSource }),
@@ -52,9 +53,10 @@ export async function completeOnboarding(_state, formData) {
 // The dashboard's get-started panel, hidden on the account so it stays hidden on every device.
 export async function dismissGetStarted() {
 	const { account } = await requireAccount();
-	await Account.updateOne(
-		{ _id: account._id, "onboarding.checklistDismissedAt": null },
-		{ $set: { "onboarding.checklistDismissedAt": new Date() } }
+	await updateRows(
+		"accounts",
+		{ where: "_id = ? AND json_extract(onboarding, '$.checklistDismissedAt') IS NULL", params: [account._id] },
+		{ set: { "onboarding.checklistDismissedAt": new Date() } }
 	);
 	revalidatePath("/", "layout");
 	return { ok: true };

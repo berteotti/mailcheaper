@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { getFirstSendProblem, getFirstSendSlice } from "../lib/first-send.js";
-import { activate, as, catchRedirect, form, jsonRequest, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
-import { published } from "./stubs/qstash.mjs";
+import { activate, as, catchRedirect, form, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
 
 test("the first slice is 5% of never-mailed contacts, between 200 and 2,000", () => {
 	assert.equal(getFirstSendSlice(150), null, "small lists go at once");
@@ -26,22 +25,30 @@ describe("first sends in steps", () => {
 	let m;
 	const handled = new Set();
 
-	// Sends run until none are left; checks only once, as the ones they publish are due later.
+	// The outbox's jobs in the order they were written, as the queue consumer would run them by kind.
+	async function readJobs() {
+		const rows = await m.db.getAll("SELECT _id, kind, payload, availableAt FROM job_outbox ORDER BY rowid");
+		return rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
+	}
+
+	// Sends run until none are left; checks only once, as the ones they write are due later.
 	async function runJobs({ checks = false } = {}) {
 		const results = [];
-		const end = checks ? published.length : Infinity;
-		for (let index = 0; index < Math.min(end, published.length); index++) {
-			const job = published[index];
-			const isCheck = job.url.endsWith("/api/jobs/check-first-send");
-			if (handled.has(index) || isCheck !== checks) continue;
-			handled.add(index);
-			const route = isCheck ? m.checkRoute : m.sendBatchRoute;
-			results.push({ url: job.url, notBefore: job.notBefore, result: await (await route.POST(jsonRequest(job.url, { method: "POST", body: job.body }))).json() });
+		const end = checks ? (await readJobs()).length : Infinity;
+		for (let index = 0; ; index++) {
+			const jobs = await readJobs();
+			if (index >= Math.min(end, jobs.length)) break;
+			const job = jobs[index];
+			const isCheck = job.kind === "check-first-send";
+			if (handled.has(job._id) || isCheck !== checks) continue;
+			handled.add(job._id);
+			const result = isCheck ? await m.sending.checkFirstSend(job.payload) : await m.sending.runSendJob(job.payload);
+			results.push({ kind: job.kind, availableAt: job.availableAt, result });
 		}
 		return results;
 	}
 
-	const skipPublished = () => published.forEach((_, index) => handled.add(index));
+	const skipPublished = async () => (await readJobs()).forEach(({ _id }) => handled.add(_id));
 
 	async function setup(email, { neverMailed, mailed = 0 }) {
 		const user = await signIn(email);
@@ -56,31 +63,40 @@ describe("first sends in steps", () => {
 			status: "active",
 			...(lastSentAt && { lastSentAt }),
 		});
-		await m.Contact.insertMany([
-			...Array.from({ length: neverMailed }, (_, index) => contact(index)),
-			...Array.from({ length: mailed }, (_, index) => contact(neverMailed + index, new Date(Date.now() - 86_400_000))),
-		]);
+		const db = await m.db.connectDb();
+		await db.batch(
+			[
+				...Array.from({ length: neverMailed }, (_, index) => contact(index)),
+				...Array.from({ length: mailed }, (_, index) => contact(neverMailed + index, new Date(Date.now() - 86_400_000))),
+			].map((values) => m.records.insertStatement(db, "contacts", { ...values, subscribedAt: new Date() }))
+		);
 		const draftUrl = await as(user, () => catchRedirect(m.campaigns.createCampaign(user.newsletterId)));
 		user.campaignId = draftUrl.split("/").at(-1);
 		await as(user, () => m.campaigns.saveCampaign(user.campaignId, { subject: "Issue", previewText: "Hi", body: "<p>Hello</p>" }));
 		return user;
 	}
 
-	const count = (user, status) => m.Message.countDocuments({ accountId: user.accountId, campaignId: user.campaignId, status });
-	const campaignOf = (user) => m.Campaign.findOne({ accountId: user.accountId, _id: user.campaignId }).lean();
+	const count = (user, status) =>
+		m.db.getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ? AND status = ?", [user.accountId, user.campaignId, status]);
+	const campaignOf = (user) => m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, user.campaignId]);
+	// A few of the slice's sends bounced.
+	async function bounceSlice(user, howMany) {
+		await m.db.execute(
+			`UPDATE messages SET status = 'bounced', bouncedAt = ? WHERE rowid IN (SELECT rowid FROM messages
+				WHERE accountId = ? AND campaignId = ? AND firstSend = 1 AND status = 'sent' LIMIT ?)`,
+			[new Date(), user.accountId, user.campaignId, howMany]
+		);
+	}
 
 	before(async () => {
-		app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next", SEND_RATE_PER_SECOND: "1000" });
+		app = await startTestApp({ SEND_RATE_PER_SECOND: "1000" });
 		m = {
 			newsletters: await import("../app/(app)/newsletters/actions.js"),
 			campaigns: await import("../app/(app)/campaigns/actions.js"),
-			sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
-			checkRoute: await import("../app/api/jobs/check-first-send/route.js"),
+			sending: await import("../lib/sending.js"),
 			blocks: await import("../lib/account-blocks.js"),
-			Account: (await import("../models/Account.js")).default,
-			Campaign: (await import("../models/Campaign.js")).default,
-			Contact: (await import("../models/Contact.js")).default,
-			Message: (await import("../models/Message.js")).default,
+			db: await import("../lib/db.js"),
+			records: await import("../lib/records.js"),
 		};
 	});
 
@@ -96,31 +112,28 @@ describe("first sends in steps", () => {
 		assert.equal(campaign.stats.recipients, 2600);
 		assert.deepEqual({ slice: campaign.firstSend.slice, held: campaign.firstSend.held }, { slice: 200, held: 2300 });
 
-		const batchJobs = published.filter(({ url, body }) => url.endsWith("send-batch") && String(body.accountId) === String(user.accountId));
-		assert.ok(batchJobs.every(({ flowControl }) => flowControl.key === `account-${user.accountId}` && flowControl.parallelism === 1), "one batch at a time per account");
+		const batchJobs = (await readJobs()).filter(({ kind, payload }) => kind === "send" && payload.accountId === user.accountId);
+		assert.ok(batchJobs.every(({ payload }) => payload.campaignId === user.campaignId && payload.messageIds.length <= 50), "batches of the campaign's messages");
 		const sends = await runJobs();
 		assert.equal(sends.reduce((sum, { result }) => sum + result.sent, 0), 300);
 		assert.equal((await campaignOf(user)).status, "sending", "not sent while contacts are held");
 
-		const [check] = await runJobs({ checks: true }).then((results) => results.filter(({ url }) => url.endsWith("check-first-send")));
-		assert.ok(check.notBefore * 1000 >= start + 179 * 60_000, "3 hours later");
+		const [check] = await runJobs({ checks: true }).then((results) => results.filter(({ kind }) => kind === "check-first-send"));
+		assert.ok(check.availableAt.getTime() >= start + 179 * 60_000, "3 hours later");
 		assert.equal(check.result.released, 2300);
 		assert.equal(await count(user, "held"), 0);
 		assert.equal(await count(user, "queued"), 2300);
-		const batches = published.filter(({ url, body }, index) => !handled.has(index) && url.endsWith("send-batch") && String(body.accountId) === String(user.accountId));
-		assert.equal(batches.reduce((sum, { body }) => sum + body.messageIds.length, 0), 2300);
-		assert.ok(batches.every(({ notBefore }) => notBefore === undefined), "past the warm-up, at full speed");
-		skipPublished();
+		const batches = (await readJobs()).filter(({ _id, kind, payload }) => !handled.has(_id) && kind === "send" && payload.accountId === user.accountId);
+		assert.equal(batches.reduce((sum, { payload }) => sum + payload.messageIds.length, 0), 2300);
+		assert.ok(batches.every(({ availableAt }) => availableAt.getTime() <= Date.now()), "past the warm-up, at full speed");
+		await skipPublished();
 	});
 
 	test("a slice with too many bounces blocks the account; once an admin unblocks it, resuming sends the rest", async () => {
 		const user = await setup("bought-list@example.com", { neverMailed: 3000 });
 		await as(user, () => m.campaigns.sendCampaign(user.campaignId, {}));
 		await runJobs();
-		const slice = await m.Message.find({ accountId: user.accountId, campaignId: user.campaignId, firstSend: true, status: "sent" })
-			.limit(12)
-			.lean();
-		await m.Message.updateMany({ accountId: user.accountId, _id: { $in: slice.map(({ _id }) => _id) } }, { $set: { status: "bounced", bouncedAt: new Date() } });
+		await bounceSlice(user, 12);
 
 		const [check] = await runJobs({ checks: true });
 		assert.equal(check.result.blocked, true);
@@ -128,7 +141,7 @@ describe("first sends in steps", () => {
 		assert.equal(paused.status, "paused");
 		assert.equal(paused.pauseCode, "first_send_slice");
 		assert.equal(paused.pauseReason, "The first 200 new contacts had a bounce rate of 6.00% (limit 5.00%). The rest of the new contacts weren't sent.");
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await m.db.getOne("SELECT * FROM accounts WHERE _id = ?", [user.accountId]);
 		assert.deepEqual(
 			[account.status, account.pausedBy, account.pauseReason],
 			["paused", "slice", "The first 200 new contacts had a bounce rate of 6.00% (limit 5.00%)"]
@@ -141,15 +154,14 @@ describe("first sends in steps", () => {
 		assert.equal(await count(user, "held"), 0, "the customer chose to send the rest");
 		assert.equal(await count(user, "queued"), 2800);
 		assert.equal((await campaignOf(user)).status, "sending");
-		skipPublished();
+		await skipPublished();
 	});
 
 	test("a slice over the pause level only holds the rest, with a warning, until its owner resumes", async () => {
 		const user = await setup("warm-list@example.com", { neverMailed: 3000 });
 		await as(user, () => m.campaigns.sendCampaign(user.campaignId, {}));
 		await runJobs();
-		const slice = await m.Message.find({ accountId: user.accountId, campaignId: user.campaignId, firstSend: true, status: "sent" }).limit(6).lean();
-		await m.Message.updateMany({ accountId: user.accountId, _id: { $in: slice.map(({ _id }) => _id) } }, { $set: { status: "bounced", bouncedAt: new Date() } });
+		await bounceSlice(user, 6);
 
 		const emailsBefore = platformEmails.length;
 		const [check] = await runJobs({ checks: true });
@@ -157,7 +169,7 @@ describe("first sends in steps", () => {
 		const paused = await campaignOf(user);
 		assert.equal(paused.pauseCode, "first_send_slice");
 		assert.match(paused.pauseReason, /^The first 200 new contacts had a bounce rate of 3.00% \(limit 2.00%\)\. The rest of the new contacts wait: clean the list/);
-		assert.equal((await m.Account.findById(user.accountId).lean()).status, "active", "6 bounces don't block");
+		assert.equal((await m.db.getOne("SELECT status FROM accounts WHERE _id = ?", [user.accountId])).status, "active", "6 bounces don't block");
 		const emails = platformEmails.slice(emailsBefore);
 		assert.deepEqual(emails.map(({ to, subject }) => [to, subject]), [[["warm-list@example.com"], "[MailCheap] Campaign paused"]]);
 		assert.equal(await count(user, "held"), 2800);
@@ -167,21 +179,20 @@ describe("first sends in steps", () => {
 		assert.equal(resumed.status, "sending");
 		assert.ok(resumed.ratesAcceptedAt instanceof Date, "the owner took the rates as they are");
 		assert.equal(await count(user, "held"), 0);
-		skipPublished();
+		await skipPublished();
 	});
 
 	test("a check while the slice is still going out waits a few more minutes", async () => {
 		const user = await setup("slow-slice@example.com", { neverMailed: 1000 });
 		await as(user, () => m.campaigns.sendCampaign(user.campaignId, {}));
-		const check = published.find(({ url }, index) => !handled.has(index) && url.endsWith("check-first-send"));
-		skipPublished();
-		const response = await m.checkRoute.POST(jsonRequest(check.url, { method: "POST", body: check.body }));
-		const result = await response.json();
+		const check = (await readJobs()).find(({ _id, kind }) => !handled.has(_id) && kind === "check-first-send");
+		await skipPublished();
+		const result = await m.sending.checkFirstSend(check.payload);
 		assert.equal(result.waiting, true);
 		assert.equal(result.queued, 200);
-		assert.ok(published.at(-1).url.endsWith("check-first-send"), "checks again later");
+		assert.equal((await readJobs()).at(-1).kind, "check-first-send", "checks again later");
 		assert.equal(await count(user, "held"), 800);
-		skipPublished();
+		await skipPublished();
 	});
 
 	test("lists without new contacts, or small ones, go at once", async () => {

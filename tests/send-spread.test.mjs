@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { SEND_SPREAD, describeSpreadHours, getBatchStarts, getSpreadEnd, getSpreadHours, getSpreadMs, getWarmup } from "../lib/send-spread.js";
-import { activate, as, catchRedirect, form, jsonRequest, signIn, startTestApp } from "./helpers/app.mjs";
-import { published } from "./stubs/qstash.mjs";
+import { activate, as, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
 
 const HOUR_MS = 3_600_000;
 const SPREAD_MS = SEND_SPREAD.hours * HOUR_MS;
@@ -57,18 +56,22 @@ describe("a new account's campaigns go out over hours", () => {
 	async function setup(email, contacts, { isMailed = false } = {}) {
 		const user = await signIn(email);
 		await activate(user, { limitOverrides: { emailsPerMonth: 100_000, subscribers: 100_000 } });
-		await m.Account.updateOne({ _id: user.accountId }, { $unset: { spreadUntil: 1 } });
+		await m.db.execute("UPDATE accounts SET spreadUntil = NULL WHERE _id = ?", [user.accountId]);
 		const slug = email.split("@")[0];
 		const url = await as(user, () => catchRedirect(m.newsletters.saveNewsletter(null, form({ name: slug, slug, postalAddress: "1 Main St" }))));
 		user.newsletterId = url.split("/").at(-1);
-		await m.Contact.insertMany(
-			Array.from({ length: contacts }, (_, index) => ({
-				accountId: user.accountId,
-				newsletterId: user.newsletterId,
-				email: `reader${index}@${slug}.example.org`,
-				status: "active",
-				...(isMailed && { lastSentAt: new Date(Date.now() - 86_400_000) }),
-			}))
+		const db = await m.db.connectDb();
+		await db.batch(
+			Array.from({ length: contacts }, (_, index) =>
+				m.records.insertStatement(db, "contacts", {
+					accountId: user.accountId,
+					newsletterId: user.newsletterId,
+					email: `reader${index}@${slug}.example.org`,
+					status: "active",
+					subscribedAt: new Date(),
+					...(isMailed && { lastSentAt: new Date(Date.now() - 86_400_000) }),
+				})
+			)
 		);
 		return user;
 	}
@@ -80,42 +83,45 @@ describe("a new account's campaigns go out over hours", () => {
 		return campaignId;
 	}
 
-	const sortJobs = (jobs) => ({
-		batches: jobs.filter(({ url }) => url.endsWith("/api/jobs/send-batch")),
-		checks: jobs.filter(({ url }) => url.endsWith("/api/jobs/check-first-send")),
-	});
-
-	// What one send published, in order.
-	async function send(user, campaignId) {
-		const from = published.length;
-		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(campaignId, {})), { ok: true });
-		return sortJobs(published.slice(from));
+	// The outbox's jobs after a point, in the order they were written.
+	const lastJob = async () => (await m.db.getValue("SELECT max(rowid) FROM job_outbox")) ?? 0;
+	async function jobsSince(from) {
+		const rows = await m.db.getAll("SELECT kind, payload, availableAt FROM job_outbox WHERE rowid > ? ORDER BY rowid", [from]);
+		const jobs = rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) }));
+		return { batches: jobs.filter(({ kind }) => kind === "send"), checks: jobs.filter(({ kind }) => kind === "check-first-send") };
 	}
 
-	function runBatches(batches) {
-		return Promise.all(batches.map((batch) => m.sendBatchRoute.POST(jsonRequest(batch.url, { method: "POST", body: batch.body }))));
+	// What one send wrote to the outbox, in order.
+	async function send(user, campaignId) {
+		const from = await lastJob();
+		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(campaignId, {})), { ok: true });
+		return jobsSince(from);
+	}
+
+	// As the queue consumer runs them (one at a time: the in-memory D1 has one connection).
+	async function runBatches(batches) {
+		for (const batch of batches) await m.sending.runSendJob(batch.payload);
 	}
 
 	// Each batch's start, in hours from the send.
 	function startHours(batches, start) {
-		return batches.map(({ notBefore }) => (notBefore === undefined ? 0 : Math.round(((notBefore * 1000 - start) / HOUR_MS) * 100) / 100));
+		return batches.map(({ availableAt }) => Math.max(0, Math.round(((availableAt.getTime() - start) / HOUR_MS) * 100) / 100));
 	}
 
-	const campaignOf = (user, campaignId) => m.Campaign.findOne({ accountId: user.accountId, _id: campaignId }).lean();
-	const countHeld = (user, campaignId) => m.Message.countDocuments({ accountId: user.accountId, campaignId, status: "held" });
+	const campaignOf = (user, campaignId) => m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, campaignId]);
+	const countHeld = (user, campaignId) =>
+		m.db.getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ? AND status = 'held'", [user.accountId, campaignId]);
+	const findAccountRow = (user) => m.db.getOne("SELECT * FROM accounts WHERE _id = ?", [user.accountId]);
 
 	before(async () => {
-		app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next", SEND_RATE_PER_SECOND: "1000" });
+		app = await startTestApp({ SEND_RATE_PER_SECOND: "1000" });
 		m = {
 			newsletters: await import("../app/(app)/newsletters/actions.js"),
 			campaigns: await import("../app/(app)/campaigns/actions.js"),
-			sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
-			checkRoute: await import("../app/api/jobs/check-first-send/route.js"),
+			sending: await import("../lib/sending.js"),
 			accounts: await import("../lib/accounts.js"),
-			Account: (await import("../models/Account.js")).default,
-			Campaign: (await import("../models/Campaign.js")).default,
-			Contact: (await import("../models/Contact.js")).default,
-			Message: (await import("../models/Message.js")).default,
+			db: await import("../lib/db.js"),
+			records: await import("../lib/records.js"),
 		};
 	});
 
@@ -131,9 +137,9 @@ describe("a new account's campaigns go out over hours", () => {
 		assert.deepEqual(startHours(batches, start), [0, 2.67, 5.33, 8]);
 		assert.equal(await countHeld(user, campaignId), 250);
 		assert.equal(checks.length, 1);
-		assert.ok(Math.abs(checks[0].notBefore * 1000 - (start + (10.67 + 3) * HOUR_MS)) < 120_000, "3 hours after the slice's share");
+		assert.ok(Math.abs(checks[0].availableAt.getTime() - (start + (10.67 + 3) * HOUR_MS)) < 120_000, "3 hours after the slice's share");
 
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await findAccountRow(user);
 		assert.ok(Math.abs(account.spreadUntil.getTime() - getSpreadEnd(new Date(start)).getTime()) < 60_000, "30 days from the first campaign");
 		const sending = await campaignOf(user, campaignId);
 		assert.equal(sending.spreadHours, 24);
@@ -143,21 +149,21 @@ describe("a new account's campaigns go out over hours", () => {
 		await runBatches(batches);
 		assert.equal((await campaignOf(user, campaignId)).status, "sending", "not sent while contacts are held");
 
-		const from = published.length;
+		const from = await lastJob();
 		const checkedAt = Date.now();
-		const check = await (await m.checkRoute.POST(jsonRequest(checks[0].url, { method: "POST", body: checks[0].body }))).json();
+		const check = await m.sending.checkFirstSend(checks[0].payload);
 		assert.equal(check.released, 250);
 		// The rest over its own share: 24 × 250 / 450 ≈ 13.33 hours, 5 batches of 50.
-		const rest = sortJobs(published.slice(from)).batches;
+		const rest = (await jobsSince(from)).batches;
 		assert.deepEqual(startHours(rest, checkedAt), [0, 2.67, 5.33, 8, 10.67]);
-		assert.equal(rest.reduce((sum, { body }) => sum + body.messageIds.length, 0), 250, "only the held contacts");
+		assert.equal(rest.reduce((sum, { payload }) => sum + payload.messageIds.length, 0), 250, "only the held contacts");
 		assert.ok(Math.abs((await campaignOf(user, campaignId)).sendingUntil.getTime() - (checkedAt + 13.33 * HOUR_MS)) < 120_000);
 
 		await runBatches(rest);
 		const sent = await campaignOf(user, campaignId);
 		assert.equal(sent.status, "sent");
 		assert.equal(sent.stats.sent, 450);
-		assert.equal(sent.sendingUntil, undefined, "cleared once sent");
+		assert.equal(sent.sendingUntil, null, "cleared once sent");
 	});
 
 	test("the next ones go over 16, 12, then 8 hours, without a check when nobody is new", async () => {
@@ -178,14 +184,14 @@ describe("a new account's campaigns go out over hours", () => {
 		const user = await setup("trusted@example.com", 450);
 		assert.equal(await m.accounts.setSendSpread(user.accountId, false), true);
 		const fullSpeed = await send(user, await draft(user));
-		assert.ok(fullSpeed.batches.every(({ notBefore }) => notBefore === undefined), "back to back");
+		assert.ok(fullSpeed.batches.every(({ availableAt }) => availableAt.getTime() <= Date.now()), "back to back");
 		assert.equal(fullSpeed.checks.length, 1, "new contacts go in steps");
-		assert.equal((await m.Account.findById(user.accountId).lean()).spreadUntil <= new Date(), true);
+		assert.equal((await findAccountRow(user)).spreadUntil <= new Date(), true);
 
 		assert.equal(await m.accounts.setSendSpread(user.accountId, true), true);
 		const spread = await send(user, await draft(user));
-		assert.ok(spread.batches.slice(1).every(({ notBefore }) => notBefore > Date.now() / 1000), "spread again");
-		const { spreadUntil } = await m.Account.findById(user.accountId).lean();
+		assert.ok(spread.batches.slice(1).every(({ availableAt }) => availableAt.getTime() > Date.now()), "spread again");
+		const { spreadUntil } = await findAccountRow(user);
 		assert.ok(spreadUntil.getTime() > Date.now() + 29 * 24 * HOUR_MS, "for another 30 days");
 	});
 });

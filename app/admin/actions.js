@@ -1,6 +1,5 @@
 "use server";
 
-import { isValidObjectId } from "mongoose";
 import { revalidatePath } from "next/cache";
 import { blockAccount, unblockAccount } from "@/lib/account-blocks";
 import { setLimitOverrides, setSendSpread } from "@/lib/accounts";
@@ -8,6 +7,7 @@ import { requireAdmin } from "@/lib/auth";
 import { grantFreePlan, revokeFreePlan } from "@/lib/billing";
 import { isCloud } from "@/lib/config";
 import { getPlan } from "@/lib/plans";
+import { isObjectIdString } from "@/lib/validation";
 
 const MAX_REASON_LENGTH = 200;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,7 +32,7 @@ function readEndDate(value) {
 // reason: what the account's owner reads on their dashboard.
 export async function blockAccountAction(accountId, reason) {
 	const admin = await requireAdmin();
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	const text = String(reason ?? "").trim().slice(0, MAX_REASON_LENGTH);
 	const isBlocked = await blockAccount(accountId, { reason: text, by: "admin", detail: `Blocked by ${admin.email}` });
 	console.info(`[admin] ${admin.email} blocked account ${accountId}`);
@@ -43,7 +43,7 @@ export async function blockAccountAction(accountId, reason) {
 // The only way a block ends. Its campaigns stay paused until their owner resumes them.
 export async function unblockAccountAction(accountId) {
 	const admin = await requireAdmin();
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	try {
 		if (!(await unblockAccount(accountId))) return { error: "Not blocked" };
 	} catch (error) {
@@ -57,7 +57,7 @@ export async function unblockAccountAction(accountId) {
 
 export async function setSpread(accountId, isOn) {
 	const admin = await requireAdmin();
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	if (!(await setSendSpread(accountId, isOn === true))) return { error: "Account not found" };
 	console.info(`[admin] ${admin.email} turned ${isOn === true ? "on" : "off"} the warm-up for account ${accountId}`);
 	revalidatePath("/admin");
@@ -67,7 +67,7 @@ export async function setSpread(accountId, isOn) {
 export async function saveLimits(_state, formData) {
 	const admin = await requireAdmin();
 	const accountId = String(formData.get("accountId") ?? "");
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	const limits = { emailsPerMonth: readLimit(formData.get("emailsPerMonth")), subscribers: readLimit(formData.get("subscribers")) };
 	if (Object.values(limits).some(Number.isNaN)) return { error: "Use whole numbers, or leave empty for the plan's" };
 
@@ -81,7 +81,7 @@ export async function giveFreePlan(_state, formData) {
 	const admin = await requireAdmin();
 	if (!isCloud()) return { error: "There are no plans on a self-hosted server" };
 	const accountId = String(formData.get("accountId") ?? "");
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	const plan = getPlan(String(formData.get("plan") ?? ""));
 	if (!plan) return { error: "Pick a plan" };
 	const until = readEndDate(formData.get("until"));
@@ -95,7 +95,7 @@ export async function giveFreePlan(_state, formData) {
 
 export async function endFreePlan(accountId) {
 	const admin = await requireAdmin();
-	if (!isValidObjectId(accountId)) return { error: "Account not found" };
+	if (!isObjectIdString(accountId)) return { error: "Account not found" };
 	if (!(await revokeFreePlan(accountId))) return { error: "No free plan to end" };
 	console.info(`[admin] ${admin.email} ended the free plan of account ${accountId}`);
 	revalidatePath("/admin");

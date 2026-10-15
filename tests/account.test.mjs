@@ -3,7 +3,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import mongoose from "mongoose";
+import { execute } from "../lib/db.js";
 import { activate, as, form, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 
 // The account page's profile, and the account menu at the bottom of the sidebar.
@@ -72,11 +72,17 @@ describe("the profile", () => {
 
 	test("keeps the picture Google gave at sign-up, and says Google signs in too", async () => {
 		const user = await signIn("google@example.com");
-		await mongoose.connection.db.collection("users").updateOne({ _id: user.userId }, { $set: { name: "Gina", image: GOOGLE_PICTURE } });
+		await execute("UPDATE users SET name = ?, image = ? WHERE id = ?", ["Gina", GOOGLE_PICTURE, user.userId]);
 		assert.equal(await m.accounts.hasGoogleSignIn(user.userId), false);
-		await mongoose.connection.db
-			.collection("auth_accounts")
-			.insertOne({ userId: user.userId, providerId: "google", accountId: "google-gina", createdAt: new Date(), updatedAt: new Date() });
+		const now = new Date().toISOString();
+		await execute("INSERT INTO auth_accounts (id, userId, providerId, accountId, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)", [
+			"google-gina-sign-in",
+			user.userId,
+			"google",
+			"google-gina",
+			now,
+			now,
+		]);
 		assert.equal(await m.accounts.hasGoogleSignIn(user.userId), true);
 
 		assert.deepEqual(await saveProfile(user, { name: "Gina Lee", image: GOOGLE_PICTURE }), { ok: true });

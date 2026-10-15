@@ -21,7 +21,6 @@ import {
 import { getKeyLevel, listApiKeys } from "@/lib/api-keys";
 import { requireAccount } from "@/lib/auth";
 import { getAppUrl } from "@/lib/config";
-import { connectDb } from "@/lib/db";
 import { getMcpClients, getMcpConnectors, getMcpUrl } from "@/lib/docs/mcp-clients";
 import { formatDate, formatRelative } from "@/lib/format";
 import { listConnectedApps } from "@/lib/oauth";
@@ -33,7 +32,6 @@ const LEVEL_LABELS = { full: "Full access", signups: "Signups only" };
 
 export default async function ApiKeysPage() {
 	const { account } = await requireAccount();
-	await connectDb();
 	const [apiKeys, connectedApps] = await Promise.all([listApiKeys(account), listConnectedApps(account)]);
 	const appUrl = getAppUrl();
 

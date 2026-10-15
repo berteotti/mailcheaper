@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { after, before, describe, test } from "node:test";
-import mongoose from "mongoose";
 import { getEventPlan } from "../lib/email-event-rules.js";
 import { normalizePostshibaEvent, verifyPostshibaSignature } from "../lib/email-provider/postshiba-events.js";
-import { activate, catchRedirect, form, as, signIn, startTestApp } from "./helpers/app.mjs";
+import { execute, getOne, getValue, json } from "../lib/db.js";
+import { completeJob, readJob } from "../lib/jobs.js";
+import { insertRow } from "../lib/records.js";
+import { activate, signIn, startTestApp } from "./helpers/app.mjs";
 import { POSTSHIBA, POSTSHIBA_ENV } from "./helpers/postshiba.mjs";
 
 const SECRET = POSTSHIBA.webhookSecret;
@@ -108,18 +110,40 @@ describe("the PostShiba webhook", () => {
 	async function customer(email, slug) {
 		const user = await signIn(email);
 		await activate(user);
-		const url = await as(user, () => catchRedirect(m.newsletters.saveNewsletter(null, form({ name: slug, slug, postalAddress: "1 Main St" }))));
-		user.newsletterId = url.split("/").at(-1);
+		// The newsletter as saving one stores it: these tests are about events, not newsletters.
+		const newsletter = await insertRow("newsletters", { accountId: user.accountId, name: slug, slug, fromEmail: `hello@${slug}.example.com`, postalAddress: "1 Main St" });
+		user.newsletterId = newsletter._id;
 		user.tenantSlug = `mc-${user.accountId}`;
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { postshiba: { tenantId: `Tn-${slug}`, tenantSlug: user.tenantSlug, tenantStatus: "active" } } });
+		await execute("UPDATE accounts SET postshiba = ? WHERE _id = ?", [
+			json({ tenantId: `Tn-${slug}`, tenantSlug: user.tenantSlug, tenantStatus: "active" }),
+			user.accountId,
+		]);
 		return user;
 	}
 
+	function createContact(user, email) {
+		return insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email, status: "active", subscribedAt: new Date() });
+	}
+
+	const findMessage = (user, id) => getOne("SELECT * FROM messages WHERE accountId = ? AND _id = ?", [user.accountId, id]);
+	const findContact = (user, id) => getOne("SELECT * FROM contacts WHERE accountId = ? AND _id = ?", [user.accountId, id]);
+	const countRows = async (table, where, params) => getValue(`SELECT count(*) FROM ${table} WHERE ${where}`, params);
+
+	// What the jobs Worker does with the events the webhook stored.
+	async function runEventJobs() {
+		const rows = await m.db.getAll("SELECT _id FROM job_outbox WHERE kind = 'postshiba-event' AND completedAt IS NULL ORDER BY createdAt, rowid");
+		for (const { _id } of rows) {
+			await m.webhook.handlePostshibaEvent((await readJob(_id)).payload);
+			await completeJob(_id);
+		}
+		return rows.length;
+	}
+
 	async function sentMessage(user, email, fields = {}) {
-		const contact = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email, status: "active" });
-		const campaignId = new mongoose.Types.ObjectId();
-		await m.Campaign.create({ _id: campaignId, accountId: user.accountId, newsletterId: user.newsletterId, subject: "Issue", status: "sent", startedAt: new Date() });
-		const message = await m.Message.create({
+		const contact = await createContact(user, email);
+		const campaign = await insertRow("campaigns", { accountId: user.accountId, newsletterId: user.newsletterId, subject: "Issue", status: "sent", startedAt: new Date() });
+		const campaignId = campaign._id;
+		const message = await insertRow("messages", {
 			kind: "campaign",
 			accountId: user.accountId,
 			newsletterId: user.newsletterId,
@@ -148,7 +172,13 @@ describe("the PostShiba webhook", () => {
 		};
 	}
 
-	function post(events, { secret = SECRET, timestamp, body = JSON.stringify(events), headers } = {}) {
+	async function post(events, options) {
+		const response = await postOnly(events, options);
+		await runEventJobs();
+		return response;
+	}
+
+	function postOnly(events, { secret = SECRET, timestamp, body = JSON.stringify(events), headers } = {}) {
 		const signed = sign(body, { secret, ...(timestamp && { timestamp }) });
 		return m.route.POST(
 			new Request("http://localhost:3000/api/webhooks/postshiba", {
@@ -162,14 +192,9 @@ describe("the PostShiba webhook", () => {
 	before(async () => {
 		app = await startTestApp(POSTSHIBA_ENV);
 		m = {
-			newsletters: await import("../app/(app)/newsletters/actions.js"),
 			route: await import("../app/api/webhooks/postshiba/route.js"),
-			Account: (await import("../models/Account.js")).default,
-			Campaign: (await import("../models/Campaign.js")).default,
-			Contact: (await import("../models/Contact.js")).default,
-			Event: (await import("../models/Event.js")).default,
-			Message: (await import("../models/Message.js")).default,
-			Suppression: (await import("../models/Suppression.js")).default,
+			webhook: await import("../lib/postshiba-webhook.js"),
+			db: await import("../lib/db.js"),
 		};
 		alice = await customer("alice-ps@example.com", "alice-ps");
 		bob = await customer("bob-ps@example.com", "bob-ps");
@@ -183,13 +208,15 @@ describe("the PostShiba webhook", () => {
 		assert.equal((await post(events, { secret: "forged" })).status, 401);
 		assert.equal((await post(events, { timestamp: Math.floor(Date.now() / 1000) - 600 })).status, 401, "stale");
 		assert.equal((await post(events, { headers: { "content-type": "application/json" } })).status, 401, "unsigned");
-		assert.equal((await m.Message.findOne({ accountId: alice.accountId, _id: message._id }).lean()).status, "sent", "nothing changed");
+		assert.equal((await findMessage(alice, message._id)).status, "sent", "nothing changed");
 		assert.equal((await post({ event: "delivered" })).status, 400, "an array of events");
 
-		const response = await post(events);
+		const response = await postOnly(events);
 		assert.equal(response.status, 200);
-		assert.deepEqual(await response.json(), { ok: true, handled: 1 });
-		const delivered = await m.Message.findOne({ accountId: alice.accountId, _id: message._id }).lean();
+		assert.deepEqual(await response.json(), { ok: true, queued: 1 });
+		assert.equal((await findMessage(alice, message._id)).status, "sent", "stored first, applied by the jobs Worker");
+		assert.equal(await runEventJobs(), 1);
+		const delivered = await findMessage(alice, message._id);
 		assert.equal(delivered.status, "delivered");
 		assert.equal(delivered.providerMessageId, events[0].sg_message_id, "matched from then on by PostShiba's id");
 
@@ -204,44 +231,46 @@ describe("the PostShiba webhook", () => {
 
 	test("a hard bounce lands in its account only: message, contact, suppression and the account check", async () => {
 		const { message, contact } = await sentMessage(alice, "shared-reader@example.org");
-		const bobContact = await m.Contact.create({ accountId: bob.accountId, newsletterId: bob.newsletterId, email: "shared-reader@example.org", status: "active" });
+		const bobContact = await createContact(bob, "shared-reader@example.org");
 		const bounce = eventFor(alice, message, "bounce", { type: "bounce", status: "5.1.1", reason: "550 5.1.1 unknown user" });
 		assert.equal((await post([bounce])).status, 200);
 		assert.equal((await post([bounce])).status, 200, "redelivered");
+		assert.equal(await countRows("job_outbox", "_id = ?", [`postshiba-event:${bounce.sg_event_id}`]), 1, "one job for the event");
+		await m.webhook.handlePostshibaEvent(bounce);
 
-		assert.equal((await m.Message.findOne({ accountId: alice.accountId, _id: message._id }).lean()).status, "bounced");
-		assert.equal((await m.Contact.findOne({ accountId: alice.accountId, _id: contact._id }).lean()).status, "bounced");
-		assert.ok(await m.Suppression.exists({ accountId: alice.accountId, email: "shared-reader@example.org", reason: "bounce" }));
-		assert.equal(await m.Event.countDocuments({ accountId: alice.accountId, providerEventId: bounce.sg_event_id }), 1, "recorded once");
-		assert.ok((await m.Account.findById(alice.accountId).lean()).health.checkedAt, "the 7-day check ran");
+		assert.equal((await findMessage(alice, message._id)).status, "bounced");
+		assert.equal((await findContact(alice, contact._id)).status, "bounced");
+		assert.equal(await countRows("suppressions", "accountId = ? AND email = ? AND reason = 'bounce'", [alice.accountId, "shared-reader@example.org"]), 1);
+		assert.equal(await countRows("events", "accountId = ? AND providerEventId = ?", [alice.accountId, bounce.sg_event_id]), 1, "recorded once");
+		assert.ok((await getOne("SELECT health FROM accounts WHERE _id = ?", [alice.accountId])).health.checkedAt, "the 7-day check ran");
 
-		assert.equal((await m.Contact.findOne({ accountId: bob.accountId, _id: bobContact._id }).lean()).status, "active", "Bob's contact with the same address stays");
-		assert.equal(await m.Suppression.countDocuments({ accountId: bob.accountId }), 0);
-		assert.equal(await m.Event.countDocuments({ accountId: bob.accountId }), 0);
+		assert.equal((await findContact(bob, bobContact._id)).status, "active", "Bob's contact with the same address stays");
+		assert.equal(await countRows("suppressions", "accountId = ?", [bob.accountId]), 0);
+		assert.equal(await countRows("events", "accountId = ?", [bob.accountId]), 0);
 	});
 
 	test("an event whose tenant isn't the account its unique args name is ignored", async () => {
 		const { message } = await sentMessage(alice, "spoof@example.org");
 		const spoofed = eventFor(alice, message, "bounce", { type: "bounce", tenant_id: bob.tenantSlug });
 		assert.equal((await post([spoofed])).status, 200);
-		assert.equal((await m.Message.findOne({ accountId: alice.accountId, _id: message._id }).lean()).status, "sent");
-		assert.equal(await m.Suppression.countDocuments({ email: "spoof@example.org" }).setOptions({ crossAccount: true }), 0);
+		assert.equal((await findMessage(alice, message._id)).status, "sent");
+		assert.equal(await countRows("suppressions", "email = ?", ["spoof@example.org"]), 0, "in no account");
 
 		const { message: bobMessage } = await sentMessage(bob, "bob-only@example.org");
 		const crossed = eventFor(alice, bobMessage, "spamreport");
 		assert.equal((await post([crossed])).status, 200);
-		assert.equal((await m.Message.findOne({ accountId: bob.accountId, _id: bobMessage._id }).lean()).status, "sent", "Bob's message isn't in Alice's account");
-		assert.equal(await m.Suppression.countDocuments({ accountId: bob.accountId }), 0);
+		assert.equal((await findMessage(bob, bobMessage._id)).status, "sent", "Bob's message isn't in Alice's account");
+		assert.equal(await countRows("suppressions", "accountId = ?", [bob.accountId]), 0);
 	});
 
 	test("without unique args the tenant names the account, and suppressions still apply there", async () => {
-		await m.Contact.create({ accountId: bob.accountId, newsletterId: bob.newsletterId, email: "no-args@example.org", status: "active" });
-		const aliceContact = await m.Contact.create({ accountId: alice.accountId, newsletterId: alice.newsletterId, email: "no-args@example.org", status: "active" });
+		await createContact(bob, "no-args@example.org");
+		const aliceContact = await createContact(alice, "no-args@example.org");
 		const spam = eventFor(bob, null, "spamreport", { email: "no-args@example.org" });
 		assert.equal((await post([spam])).status, 200);
-		assert.ok(await m.Suppression.exists({ accountId: bob.accountId, email: "no-args@example.org", reason: "complaint" }));
-		assert.equal((await m.Contact.findOne({ accountId: bob.accountId, email: "no-args@example.org" }).lean()).status, "complained");
-		assert.equal((await m.Contact.findOne({ accountId: alice.accountId, _id: aliceContact._id }).lean()).status, "active");
+		assert.equal(await countRows("suppressions", "accountId = ? AND email = ? AND reason = 'complaint'", [bob.accountId, "no-args@example.org"]), 1);
+		assert.equal((await getOne("SELECT status FROM contacts WHERE accountId = ? AND email = ?", [bob.accountId, "no-args@example.org"])).status, "complained");
+		assert.equal((await findContact(alice, aliceContact._id)).status, "active");
 
 		assert.equal((await post([eventFor({ tenantSlug: "mc-000000000000000000000000" }, null, "bounce", { email: "x@example.org", type: "bounce" })])).status, 200);
 		assert.equal((await post([{ event: "delivered", email: "test@example.com", timestamp: 1, test: true }])).status, 200, "PostShiba's test event");
@@ -250,15 +279,18 @@ describe("the PostShiba webhook", () => {
 	test("PostShiba's own unsubscribe link unsubscribes the address across the account, and a drop of a suppressed address suppresses it", async () => {
 		const { message, contact, campaignId } = await sentMessage(alice, "leaving@example.org");
 		assert.equal((await post([eventFor(alice, message, "unsubscribe")])).status, 200);
-		const left = await m.Contact.findOne({ accountId: alice.accountId, _id: contact._id }).lean();
+		const left = await findContact(alice, contact._id);
 		assert.equal(left.status, "unsubscribed");
 		assert.ok(left.unsubscribedAt);
-		assert.equal((await m.Campaign.findOne({ accountId: alice.accountId, _id: campaignId }).lean()).stats.unsubscribed, 1);
+		const campaign = () => getOne("SELECT stats FROM campaigns WHERE accountId = ? AND _id = ?", [alice.accountId, campaignId]);
+		assert.equal((await campaign()).stats.unsubscribed, 1);
+		await m.webhook.handlePostshibaEvent(eventFor(alice, message, "unsubscribe"));
+		assert.equal((await campaign()).stats.unsubscribed, 1, "counted once");
 
 		const { message: dropped } = await sentMessage(alice, "dropped@example.org");
 		assert.equal((await post([eventFor(alice, dropped, "dropped", { reason: "Bounced Address" })])).status, 200);
-		const failed = await m.Message.findOne({ accountId: alice.accountId, _id: dropped._id }).lean();
+		const failed = await findMessage(alice, dropped._id);
 		assert.deepEqual([failed.status, failed.error], ["failed", "Dropped by PostShiba: Bounced Address"]);
-		assert.equal((await m.Suppression.findOne({ accountId: alice.accountId, email: "dropped@example.org" }).lean()).reason, "provider");
+		assert.equal((await getOne("SELECT reason FROM suppressions WHERE accountId = ? AND email = ?", [alice.accountId, "dropped@example.org"])).reason, "provider");
 	});
 });

@@ -24,15 +24,15 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
-import { scoped } from "@/lib/account-scope";
 import { getAppUrl } from "@/lib/config";
 import { CONTACTS_PAGE_SIZE, findContactsPage } from "@/lib/contacts";
+import { getValue } from "@/lib/db";
 import { getAddContactCurl } from "@/lib/docs/reference";
 import { formatDate, formatNumber } from "@/lib/format";
 import { toNewsletterOption } from "@/lib/newsletters";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
+import { CONTACT_STATUSES } from "@/lib/statuses";
 import { cn } from "@/lib/utils";
-import Contact, { CONTACT_STATUSES } from "@/models/Contact";
 
 export const metadata = { title: "Contacts" };
 
@@ -51,7 +51,13 @@ export default async function ContactsPage({ searchParams }) {
 		: { contacts: [], counts: {}, totalAll: 0, total: 0 };
 	const pageCount = Math.max(1, Math.ceil(total / CONTACTS_PAGE_SIZE));
 	// totalAll counts within the search.
-	const hasContacts = totalAll > 0 || Boolean(query && newsletterId && (await Contact.exists(scoped(account, { newsletterId: selected._id }))));
+	const hasContacts =
+		totalAll > 0 ||
+		Boolean(
+			query &&
+				newsletterId &&
+				(await getValue("SELECT 1 FROM contacts WHERE accountId = ? AND newsletterId = ? LIMIT 1", [String(account._id), newsletterId]))
+		);
 	const newsletter = selected && toNewsletterOption(selected);
 
 	function href(changes) {
@@ -135,7 +141,7 @@ export default async function ContactsPage({ searchParams }) {
 											<span className="flex min-w-0 items-center gap-2.5">
 												<AvatarContact
 													email={contact.email}
-													gravatarHash={gravatarHash(contact.email)}
+													colorHash={contactColorHash(contact.email)}
 													size={26}
 												/>
 												<span className="truncate">{contact.email}</span>
@@ -202,7 +208,7 @@ function PageLink({ href, isDisabled, label, children }) {
 	);
 }
 
-function gravatarHash(email) {
+function contactColorHash(email) {
 	return crypto.createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }
 

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { getConfirmationContent } from "../lib/confirmation-content.js";
-import { activate, as, callApi, catchRedirect, form, jsonRequest, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { getAll, getOne, getValue } from "../lib/db.js";
+import { insertRow, updateRows } from "../lib/records.js";
+import { env as bindings } from "./helpers/bindings.mjs";
+import { activate, as, callApi, catchRedirect, form, memoryBucket, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
-import { published } from "./stubs/qstash.mjs";
 import { remoteImages } from "./stubs/remote-image.mjs";
-import { deleted as s3Deleted, objects as s3Objects } from "./stubs/s3.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
-import { deleted as blobDeleted, stored as blobStored } from "./stubs/vercel-blob.mjs";
 
 // The REST API through its route handler, with keys made on the API keys page. Every successful answer is
 // checked against the action's output schema, which the docs and MCP publish.
@@ -16,12 +16,7 @@ let m;
 let processed = 0;
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
-const S3_ENV = {
-	IMAGES_S3_BUCKET: "mailcheap-images-test",
-	IMAGES_S3_ACCESS_KEY_ID: "images-key-id",
-	IMAGES_S3_SECRET_ACCESS_KEY: "images-secret",
-	IMAGES_CDN_URL: "https://cdn.example.com",
-};
+const ASSET_ENV = { ASSET_URL: "https://assets.example.com" };
 
 async function api(key, method, path, body) {
 	const response = await callApi(method, `/api/v1${path}`, { key, body });
@@ -42,10 +37,11 @@ function assertError(response, status, code) {
 	return response.body.error.message;
 }
 
+// Every published job, through the queue consumer as the Jobs Worker runs them.
 async function runJobs() {
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		if (url.endsWith("/api/jobs/send-batch")) await m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body }));
+	while (processed < queued.length) {
+		const body = queued[processed++];
+		await m.jobs.queue({ messages: [{ body, attempts: 1, ack() {}, retry() {} }] });
 	}
 }
 
@@ -96,7 +92,7 @@ function saveSettingsForm(user, { description = "", confirmation }) {
 }
 
 before(async () => {
-	app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		rest: await import("../lib/api/rest.js"),
 		reference: await import("../lib/docs/reference.js"),
@@ -104,17 +100,10 @@ before(async () => {
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		exportRoute: await import("../app/api/v1/contacts/export.csv/route.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		accounts: await import("../lib/accounts.js"),
 		blocks: await import("../lib/account-blocks.js"),
 		tokens: await import("../lib/api-key-tokens.js"),
-		Account: (await import("../models/Account.js")).default,
-		ApiKey: (await import("../models/ApiKey.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
-		Upload: (await import("../models/Upload.js")).default,
 	};
 });
 
@@ -159,14 +148,14 @@ describe("key levels", () => {
 		]) {
 			assertError(await api(user.signupsKey, method, path, body), 403, "forbidden");
 		}
-		assert.equal(await m.Campaign.countDocuments({ accountId: user.accountId }), 0);
-		assert.equal(await m.ApiKey.countDocuments({ accountId: user.accountId, name: "Escalate" }), 0);
+		assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [user.accountId]), 0);
+		assert.equal(await getValue("SELECT count(*) FROM api_keys WHERE accountId = ? AND name = 'Escalate'", [user.accountId]), 0);
 	});
 
 	test("keys from before levels can only add contacts", async () => {
 		const user = await customer("legacy-key@example.com");
 		const { key, prefix, hash } = m.tokens.generateApiKey();
-		await m.ApiKey.collection.insertOne({ accountId: user.accountId, name: "Old site key", prefix, hash, createdAt: new Date() });
+		await insertRow("api_keys", { accountId: user.accountId, name: "Old site key", prefix, hash });
 		assert.equal((await api(key, "POST", "/contacts", { email: "old-form@example.org" })).status, 201);
 		assertError(await api(key, "GET", "/campaigns"), 403, "forbidden");
 	});
@@ -177,7 +166,7 @@ describe("key levels", () => {
 		assert.equal(created.status, 201);
 		assert.match(created.body.key, /^mc_[A-Za-z0-9_-]{43}$/);
 		assert.equal(created.body.apiKey.level, "signups");
-		const stored = await m.ApiKey.findOne({ accountId: user.accountId, name: "Footer form" }).lean();
+		const stored = await getOne("SELECT * FROM api_keys WHERE accountId = ? AND name = 'Footer form'", [user.accountId]);
 		assert.notEqual(stored.hash, created.body.key, "only the hash is stored");
 
 		const listed = (await api(user.key, "GET", "/api-keys")).body.apiKeys;
@@ -198,15 +187,17 @@ describe("isolation through keys", () => {
 		const bob = await customer("bob-api@example.com");
 		await importReaders(bob, 2);
 		const bobCampaign = await draft(bob, { subject: "Bob's issue" });
-		const bobContact = await m.Contact.findOne({ accountId: bob.accountId }).lean();
+		const bobContact = await getOne("SELECT * FROM contacts WHERE accountId = ?", [bob.accountId]);
 		const bobKeyId = (await api(bob.key, "GET", "/api-keys")).body.apiKeys[0].id;
 		const snapshot = async () =>
 			JSON.stringify(
 				await Promise.all([
-					m.Campaign.find({ accountId: bob.accountId }).lean(),
-					m.Contact.find({ accountId: bob.accountId }).sort({ email: 1 }).lean(),
-					m.ApiKey.find({ accountId: bob.accountId }).select("-lastUsedAt").lean(),
-					m.Newsletter.find({ accountId: bob.accountId }).lean(),
+					getAll("SELECT * FROM campaigns WHERE accountId = ? ORDER BY _id", [bob.accountId]),
+					getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [bob.accountId]),
+					getAll("SELECT * FROM api_keys WHERE accountId = ? ORDER BY _id", [bob.accountId]).then((keys) =>
+						keys.map(({ lastUsedAt: _lastUsedAt, updatedAt: _updatedAt, ...key }) => key)
+					),
+					getAll("SELECT * FROM newsletters WHERE accountId = ? ORDER BY _id", [bob.accountId]),
 				])
 			);
 		const before = await snapshot();
@@ -260,7 +251,7 @@ describe("errors", () => {
 		const user = await customer("states@example.com");
 		assertError(await api(user.key, "GET", "/campaigns/000000000000000000000000"), 404, "not_found");
 		assertError(await api(user.key, "GET", "/contacts/nobody@example.org"), 404, "not_found");
-		const sent = await m.Campaign.create({ accountId: user.accountId, newsletterId: user.newsletterId, subject: "Old", status: "sent" });
+		const sent = await insertRow("campaigns", { accountId: user.accountId, newsletterId: user.newsletterId, subject: "Old", status: "sent" });
 		assertError(await api(user.key, "DELETE", `/campaigns/${sent._id}`), 409, "conflict");
 		assertError(await api(user.key, "PATCH", `/campaigns/${sent._id}`, { subject: "Rewrite history" }), 409, "conflict");
 		assertError(await api(user.key, "POST", `/campaigns/${sent._id}/resume`), 409, "conflict");
@@ -268,7 +259,7 @@ describe("errors", () => {
 		const deleted = await draft(user);
 		assert.deepEqual((await api(user.key, "DELETE", `/campaigns/${deleted}`)).body, { id: deleted, deleted: true });
 		assertError(await api(user.key, "GET", `/campaigns/${deleted}`), 404, "not_found");
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: deleted }).lean()).status, "canceled", "kept in the database");
+		assert.equal((await getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, deleted])).status, "canceled", "kept in the database");
 	});
 
 	test("each key has its own rate limit per action, and its account the same one across all its keys", async () => {
@@ -287,7 +278,7 @@ describe("errors", () => {
 
 	test("an account without an active plan only reaches billing", async () => {
 		const user = await customer("canceled-api@example.com");
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { subscriptionStatus: "canceled" } });
 		assertError(await api(user.key, "GET", "/campaigns"), 402, "subscription_required");
 		assertError(await api(user.signupsKey, "POST", "/contacts", { email: "late@example.org" }), 402, "subscription_required");
 		const billing = await api(user.key, "GET", "/billing");
@@ -319,7 +310,7 @@ describe("sending through the API", () => {
 		assertError(await api(user.key, "POST", `/campaigns/${id}/send`), 403, "account_blocked");
 		const later = new Date(Date.now() + 3_600_000).toISOString();
 		assertError(await api(user.key, "POST", `/campaigns/${id}/schedule`, { scheduledAt: later }), 403, "account_blocked");
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id }), 0, "nothing was queued");
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ?", [user.accountId, id]), 0, "nothing was queued");
 	});
 
 	test("sending twice answers conflict and sends nothing more", async () => {
@@ -340,7 +331,7 @@ describe("sending through the API", () => {
 		assertError(await api(user.key, "POST", `/campaigns/${id}/send`), 409, "conflict");
 		await runJobs();
 		assert.equal(sesEmails.length - before, 2, "still two emails");
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id, kind: "campaign" }), 2);
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ? AND kind = 'campaign'", [user.accountId, id]), 2);
 
 		const report = await api(user.key, "GET", `/campaigns/${id}/report`);
 		assert.equal(report.body.campaign.stats.sent, 2);
@@ -382,7 +373,7 @@ describe("contacts", () => {
 			],
 		});
 		assert.deepEqual({ created: imported.body.created, role: imported.body.dropped.role, disposable: imported.body.dropped.disposable }, { created: 6, role: 1, disposable: 1 });
-		const stored = await (await import("../models/ContactImport.js")).default.findOne({ accountId: user.accountId, _id: imported.body.importId }).lean();
+		const stored = await getOne("SELECT * FROM contact_imports WHERE accountId = ? AND _id = ?", [user.accountId, imported.body.importId]);
 		assert.equal(stored.source, "api");
 		assert.ok(stored.apiKeyId, "the consent records the key");
 
@@ -445,17 +436,17 @@ describe("contacts", () => {
 		for (const fields of [{}, { consent: "off" }, { consent: "true" }]) {
 			assert.deepEqual(await add("unticked@example.org", fields), { error: "Check that this person agreed to get your emails" }, JSON.stringify(fields));
 		}
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 0, "the server refuses it without the box");
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 0, "the server refuses it without the box");
 
 		assert.deepEqual(await add("Hand@Example.org"), { email: "hand@example.org", status: "active" });
 		await flushAfter();
 		assert.equal(sesEmails.length - before, 1);
 		assert.equal(sesEmails.at(-1).subject, "Welcome");
 		assert.equal((await api(user.key, "GET", "/contacts/hand%40example.org")).body.source, "dashboard");
-		const hand = await m.Contact.findOne({ accountId: user.accountId, email: "hand@example.org" }).lean();
+		const hand = await getOne("SELECT * FROM contacts WHERE accountId = ? AND email = 'hand@example.org'", [user.accountId]);
 		assert.equal(String(hand.consent.userId), String(user.userId), "the consent names who gave it");
 		assert.ok(Date.now() - hand.consent.at < 60_000, "and when");
-		assert.equal(hand.confirmedAt, undefined, "nobody clicked a confirmation link");
+		assert.equal(hand.confirmedAt, null, "nobody clicked a confirmation link");
 		assert.deepEqual(await add("hand@example.org"), { error: "hand@example.org is already a contact" });
 		assert.deepEqual(await add("jane.doe@gmial.com"), { error: "Did you mean jane.doe@gmail.com?" });
 		assert.deepEqual(await add("hand..doe@example.org"), { error: "email is invalid" });
@@ -465,7 +456,11 @@ describe("contacts", () => {
 		assert.deepEqual([fromSite.status, fromSite.body.status], [201, "pending"], "an API signup still confirms, whatever its body says");
 		await flushAfter();
 		// Past the confirmation's resend window, where signing up again sends it again.
-		await m.Message.collection.updateMany({ accountId: user.accountId, kind: "confirmation" }, { $set: { createdAt: new Date(Date.now() - 3_600_000) } });
+		await updateRows(
+			"messages",
+			{ where: "accountId = ? AND kind = 'confirmation'", params: [user.accountId] },
+			{ set: { createdAt: Date.now() - 3_600_000 } }
+		);
 		assert.deepEqual(await add("site@example.org"), { error: "site@example.org is already a contact" });
 		assert.deepEqual(await add("later@example.org"), { email: "later@example.org", status: "active" }, "added by hand, it doesn't");
 		await flushAfter();
@@ -474,7 +469,9 @@ describe("contacts", () => {
 			[true],
 			"one confirmation email, for the API signup; the welcome email is off while signups confirm"
 		);
-		const stored = await m.Contact.find({ accountId: user.accountId, email: { $in: ["later@example.org", "site@example.org"] } }).sort({ email: 1 }).lean();
+		const stored = await getAll("SELECT * FROM contacts WHERE accountId = ? AND email IN ('later@example.org', 'site@example.org') ORDER BY email", [
+			user.accountId,
+		]);
 		assert.deepEqual(
 			stored.map(({ email, status, consent }) => [email, status, Boolean(consent)]),
 			[["later@example.org", "active", true], ["site@example.org", "pending", false]],
@@ -528,14 +525,12 @@ describe("newsletters and images", () => {
 
 	test("saved newsletters keep list cleanup off through reads and saves that leave it out", async () => {
 		const user = await customer("cleanup-saved@example.com");
-		const now = new Date();
-		await m.Newsletter.collection.insertOne({
+		// Inserted with the column's default, as a newsletter saved before list cleanup was.
+		await insertRow("newsletters", {
 			accountId: user.accountId,
 			name: "No cleanup field",
 			slug: "no-cleanup-field",
 			fromEmail: "hello@no-cleanup-field.mailcheapmail.com",
-			createdAt: now,
-			updatedAt: now,
 		});
 		for (const id of [user.slug, "no-cleanup-field"]) {
 			assert.equal((await api(user.key, "GET", `/newsletters/${id}`)).body.cleanup.enabled, false, id);
@@ -549,7 +544,7 @@ describe("newsletters and images", () => {
 		const name = `${user.slug} news`;
 		const filledIn = getConfirmationContent({ name, description: "One idea a week." });
 		assert.equal((await saveSettingsForm(user, { description: "One idea a week.", confirmation: filledIn })).ok, true);
-		const stored = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const stored = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		assert.deepEqual(stored.confirmation, { subject: "", previewText: "", markdown: "" }, "no copy of the built-in one");
 		assert.equal((await api(user.key, "GET", `/newsletters/${user.slug}`)).body.confirmation.isCustom, false);
 
@@ -578,9 +573,9 @@ describe("newsletters and images", () => {
 		assert.ok(!confirmation.markdown.includes("One idea a week."), "the description doesn't change it");
 
 		const { subject, previewText, markdown } = getConfirmationContent({ name: `${user.slug} news`, description: "One idea a week." });
-		await m.Newsletter.updateOne({ accountId: user.accountId }, { $set: { confirmation: { subject, previewText, markdown } } });
+		await updateRows("newsletters", { where: "accountId = ?", params: [user.accountId] }, { set: { confirmation: { subject, previewText, markdown } } });
 		await api(user.key, "PATCH", `/newsletters/${user.slug}`, { postalAddress: "2 Main St, Paris" });
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).confirmation.markdown, markdown);
+		assert.equal((await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId])).confirmation.markdown, markdown);
 	});
 
 	test("images upload as base64 or from a link, into the account's folder", async () => {
@@ -593,50 +588,44 @@ describe("newsletters and images", () => {
 		remoteImages.set("https://images.example.com/photo.png", PNG);
 		const fromLink = await api(user.key, "POST", "/images", { url: "https://images.example.com/photo.png" });
 		assert.equal(fromLink.status, 201);
-		assert.equal(await m.Upload.countDocuments({ accountId: user.accountId }), 2);
+		assert.equal(await getValue("SELECT count(*) FROM uploads WHERE accountId = ?", [user.accountId]), 2);
 
 		assertError(await api(user.key, "POST", "/images", { base64: Buffer.from("<svg/>").toString("base64") }), 400, "validation_failed");
 		assertError(await api(user.key, "POST", "/images", {}), 400, "validation_failed");
 		assertError(await api(user.key, "POST", "/images", { url: "https://images.example.com/missing.png" }), 400, "validation_failed");
 	});
 
-	test("with an S3 bucket, new images go there and are served from its CDN; older ones keep their URL", async () => {
-		const user = await customer("images-s3@example.com");
+	test("images go to the R2 asset bucket and are served from the asset domain; older ones keep their URL", async () => {
+		const user = await customer("images-r2@example.com");
 		const before = await api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64"), fileName: "Before.png" });
-		const uploaded = await withEnv(S3_ENV, () =>
+		assert.ok(before.body.url.startsWith("http://localhost:3000/media/"), "without an asset domain, the app serves it");
+		const uploaded = await withEnv(ASSET_ENV, () =>
 			api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64"), fileName: "Cover.png" })
 		);
 		assert.equal(uploaded.status, 201);
-		const object = s3Objects.at(-1);
-		assert.match(object.Key, new RegExp(`^accounts/${user.accountId}/images/cover-[0-9a-f]{16}\\.png$`));
-		assert.equal(object.ContentType, "image/png");
-		assert.equal(object.CacheControl, "public, max-age=31536000, immutable");
-		assert.equal(uploaded.body.url, `https://cdn.example.com/${object.Key}`);
-		const stored = await m.Upload.findOne({ accountId: user.accountId, url: uploaded.body.url }).lean();
-		assert.equal(stored.pathname, object.Key);
+		const object = [...bindings.ASSETS_BUCKET.objects.values()].at(-1);
+		assert.match(object.key, new RegExp(`^accounts/${user.accountId}/images/cover-[0-9a-f]{16}\\.png$`));
+		assert.equal(object.httpMetadata.contentType, "image/png");
+		assert.equal(object.httpMetadata.cacheControl, "public, max-age=31536000, immutable");
+		assert.equal(uploaded.body.url, `https://assets.example.com/${object.key}`);
+		const stored = await getOne("SELECT * FROM uploads WHERE accountId = ? AND url = ?", [user.accountId, uploaded.body.url]);
+		assert.equal(stored.pathname, object.key);
 
 		const { images } = (await api(user.key, "GET", "/images")).body;
-		assert.deepEqual(images.map(({ url }) => url), [uploaded.body.url, before.body.url], "the Blob image is still listed as it was");
+		assert.deepEqual(images.map(({ url }) => url), [uploaded.body.url, before.body.url], "the earlier image is still listed as it was");
 	});
 
-	test("an upload whose record can't be saved deletes its file, on S3 and on Vercel Blob, so no purge misses it", async (t) => {
+	test("an upload whose record can't be saved deletes its file, so no purge misses it", async (t) => {
 		const user = await customer("images-unrecorded@example.com");
-		t.mock.method(m.Upload, "create", async () => {
-			throw new Error("MongoDB is unreachable");
-		});
+		app.db.sqlite.exec("CREATE TEMP TRIGGER uploads_down BEFORE INSERT ON uploads BEGIN SELECT RAISE(ABORT, 'D1 is unreachable'); END");
+		t.after(() => app.db.sqlite.exec("DROP TRIGGER IF EXISTS uploads_down"));
 		t.mock.method(console, "error", () => {});
-		const upload = () => api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64"), fileName: "Cover.png" });
 		const folder = `accounts/${user.accountId}/images/`;
 
-		assertError(await withEnv(S3_ENV, upload), 500, "internal_error");
-		assert.match(s3Deleted.at(-1).Key, new RegExp(`^${folder}cover-[0-9a-f]{16}\\.png$`));
-		assert.equal(s3Objects.some(({ Key }) => Key.startsWith(folder)), false, "nothing stays on S3");
-
-		assertError(await upload(), 500, "internal_error");
-		const blob = blobStored.at(-1);
-		assert.ok(blob.pathname.startsWith(`${folder}cover`));
-		assert.equal(blobDeleted.at(-1), `https://blob.example.com/${blob.pathname}`, "nor on Vercel Blob");
-		assert.equal(await m.Upload.countDocuments({ accountId: user.accountId }), 0);
+		const response = await api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64"), fileName: "Cover.png" });
+		assertError(response, 500, "internal_error");
+		assert.equal([...bindings.ASSETS_BUCKET.objects.keys()].some((key) => key.startsWith(folder)), false, "nothing stays in R2");
+		assert.equal(await getValue("SELECT count(*) FROM uploads WHERE accountId = ?", [user.accountId]), 0);
 	});
 
 	test("list_images lists the account's images, newest first, a page at a time", async () => {
@@ -662,13 +651,13 @@ describe("newsletters and images", () => {
 		assert.equal(theirs.body.images.length, 1, "each account sees its own images");
 	});
 
-	test("without image storage, or with half of S3's settings, uploads answer unavailable and say what's missing", async () => {
+	test("without the R2 asset bucket, uploads answer unavailable and say what's missing", async (t) => {
 		const user = await customer("images-off@example.com");
-		const upload = () => api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64") });
-		const off = await withEnv({ BLOB_READ_WRITE_TOKEN: "" }, upload);
-		assert.match(assertError(off, 503, "unavailable"), /IMAGES_S3_BUCKET.*BLOB_READ_WRITE_TOKEN/);
-		const half = await withEnv({ IMAGES_S3_BUCKET: "mailcheap-images-test" }, upload);
-		assert.match(assertError(half, 503, "unavailable"), /IMAGES_S3_ACCESS_KEY_ID, IMAGES_S3_SECRET_ACCESS_KEY, IMAGES_CDN_URL/);
-		assert.equal(await m.Upload.countDocuments({ accountId: user.accountId }), 0);
+		const bucket = bindings.ASSETS_BUCKET;
+		delete bindings.ASSETS_BUCKET;
+		t.after(() => (bindings.ASSETS_BUCKET = bucket ?? memoryBucket()));
+		const off = await api(user.key, "POST", "/images", { base64: Buffer.from(PNG).toString("base64") });
+		assert.match(assertError(off, 503, "unavailable"), /ASSETS_BUCKET/);
+		assert.equal(await getValue("SELECT count(*) FROM uploads WHERE accountId = ?", [user.accountId]), 0);
 	});
 });

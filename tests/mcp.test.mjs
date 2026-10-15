@@ -61,9 +61,8 @@ before(async () => {
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		registry: await import("../lib/actions/registry.js"),
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		ApiKey: (await import("../models/ApiKey.js")).default,
+		db: await import("../lib/db.js"),
+		records: await import("../lib/records.js"),
 	};
 	owner = await customer("mcp-owner@example.com", "mcp-owner");
 	stranger = await customer("mcp-stranger@example.com", "mcp-stranger");
@@ -98,7 +97,7 @@ describe("connecting", () => {
 			assert.equal(body.error.code, "unauthorized");
 		}
 		const { key } = await as(owner, () => m.apiKeys.createApiKey(null, form({ name: "Short lived", level: "full" })));
-		const created = await m.ApiKey.findOne({ accountId: owner.accountId, name: "Short lived" }).lean();
+		const created = await m.db.getOne("SELECT * FROM api_keys WHERE accountId = ? AND name = ?", [owner.accountId, "Short lived"]);
 		await as(owner, () => m.apiKeys.revokeApiKey(String(created._id)));
 		assert.equal((await mcp(key, "tools/list")).status, 401, "a revoked key");
 	});
@@ -163,12 +162,12 @@ describe("tools", () => {
 		assert.equal(draft.structuredContent.format, "markdown");
 		assert.equal(draft.structuredContent.source, "api");
 		assert.equal(draft.structuredContent.sendProblem, null);
-		const stored = await m.Campaign.findOne({ accountId: owner.accountId, _id: draft.structuredContent.id }).lean();
+		const stored = await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [owner.accountId, draft.structuredContent.id]);
 		assert.equal(stored.markdown, "# Hello\n\nFrom MCP.");
 	});
 
 	test("failures come back as error results with the API's codes", async () => {
-		const sent = await m.Campaign.create({ accountId: owner.accountId, newsletterId: owner.newsletterId, subject: "Old", status: "sent" });
+		const sent = await m.records.insertRow("campaigns", { accountId: owner.accountId, newsletterId: owner.newsletterId, subject: "Old", status: "sent" });
 		assert.deepEqual(parseError(await callTool(owner.fullKey, "send_campaign", { id: String(sent._id) })), {
 			code: "conflict",
 			message: "This campaign was already sent: send it to more contacts instead",
@@ -187,8 +186,8 @@ describe("tools", () => {
 
 		const added = await callTool(user.fullKey, "add_contact", { email: "agent-reader@example.org", consent: true });
 		assert.equal(added.structuredContent.status, "pending");
-		const stored = await m.Contact.findOne({ accountId: user.accountId, email: "agent-reader@example.org" }).lean();
-		assert.deepEqual([stored.status, stored.source, stored.consent], ["pending", "api", undefined]);
+		const stored = await m.db.getOne("SELECT * FROM contacts WHERE accountId = ? AND email = ?", [user.accountId, "agent-reader@example.org"]);
+		assert.deepEqual([stored.status, stored.source, stored.consent], ["pending", "api", null]);
 	});
 
 	test("create_newsletter starts with list cleanup on, unless cleanup.enabled is false", async () => {
@@ -208,21 +207,21 @@ describe("scoping", () => {
 
 		const added = await callTool(owner.signupKey, "add_contact", { email: "new-reader@example.org", source: "mcp test" });
 		assert.equal(added.structuredContent.created, true);
-		assert.equal(await m.Contact.countDocuments({ accountId: owner.accountId, email: "new-reader@example.org" }), 1);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND email = ?", [owner.accountId, "new-reader@example.org"]), 1);
 
 		const { body: refused } = await mcp(owner.signupKey, "tools/call", { name: "create_campaign", arguments: { subject: "Not allowed" } });
 		assert.match(refused.error?.message ?? refused.result?.content[0].text, /create_campaign/, "the tool doesn't exist for this key");
-		assert.equal(await m.Campaign.countDocuments({ accountId: owner.accountId, subject: "Not allowed" }), 0);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM campaigns WHERE accountId = ? AND subject = ?", [owner.accountId, "Not allowed"]), 0);
 	});
 
 	test("another account's key never reaches this account's data", async () => {
-		const ownCampaign = await m.Campaign.findOne({ accountId: owner.accountId, subject: "From an agent" }).lean();
+		const ownCampaign = await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND subject = ?", [owner.accountId, "From an agent"]);
 		assert.equal(parseError(await callTool(stranger.fullKey, "get_campaign", { id: String(ownCampaign._id) })).code, "not_found");
 		assert.equal(parseError(await callTool(stranger.fullKey, "list_contacts", { newsletter: "mcp-owner" })).code, "not_found");
 		const theirs = await callTool(stranger.fullKey, "list_contacts");
 		assert.deepEqual(theirs.structuredContent.contacts, []);
 		const update = await callTool(stranger.fullKey, "update_contact_status", { id: "reader@example.org", status: "unsubscribed" });
 		assert.equal(parseError(update).code, "not_found");
-		assert.equal((await m.Contact.findOne({ accountId: owner.accountId, email: "reader@example.org" }).lean()).status, "active");
+		assert.equal((await m.db.getOne("SELECT * FROM contacts WHERE accountId = ? AND email = ?", [owner.accountId, "reader@example.org"])).status, "active");
 	});
 });

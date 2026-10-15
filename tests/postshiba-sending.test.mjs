@@ -1,31 +1,49 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { after, afterEach, before, describe, test } from "node:test";
-import mongoose from "mongoose";
 import { decryptSecret } from "../lib/credentials.js";
-import { activate, as, catchRedirect, form, jsonRequest, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { execute, getAll, getOne, getValue, newId } from "../lib/db.js";
+import { completeJob, publishPendingJobs, readJob } from "../lib/jobs.js";
+import { insertRow } from "../lib/records.js";
+import { activate, as, catchRedirect, findAccount, form, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { POSTSHIBA, POSTSHIBA_ENV, createFakePostshiba } from "./helpers/postshiba.mjs";
-import { published } from "./stubs/qstash.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 
 // PostShiba as the provider, through the real actions and jobs, with PostShiba answered in memory.
 let app;
 let fake;
 let m;
-let processed = 0;
+
+// The jobs Worker's queue consumer, on the next published job or every one.
+function consume(bodies) {
+	return m.jobs.queue({ messages: bodies.map((body) => ({ body, attempts: 1, ack() {}, retry() {} })) });
+}
 
 async function runNextJob() {
-	const { url, body } = published[processed++];
-	return url.endsWith("/api/jobs/send-batch") ? m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body })) : null;
+	await consume(queued.splice(0, 1));
 }
 
 async function runJobs() {
-	while (processed < published.length) await runNextJob();
+	while (queued.length > 0) await consume(queued.splice(0));
 }
 
+// What the cron does once a deferred job's time comes.
+async function releaseDeferredJobs() {
+	await execute("UPDATE job_outbox SET availableAt = 0 WHERE publishedAt IS NULL");
+	await publishPendingJobs();
+}
+
+const latestJob = () => getOne("SELECT * FROM job_outbox WHERE completedAt IS NULL ORDER BY createdAt DESC, rowid DESC LIMIT 1");
+const findMessage = (user, where, params = []) => getOne(`SELECT * FROM messages WHERE accountId = ? AND ${where}`, [user.accountId, ...params]);
+const countMessages = (user, campaignId, status) =>
+	getValue("SELECT count(*) FROM messages WHERE accountId = ? AND campaignId = ? AND status = ?", [user.accountId, campaignId, status]);
+const findCampaign = (user, id) => getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id]);
+const findDomain = (user, domain) => getOne("SELECT * FROM domains WHERE accountId = ? AND domain = ?", [user.accountId, domain]);
+const findNewsletter = (user) => getOne("SELECT * FROM newsletters WHERE accountId = ? ORDER BY createdAt, _id LIMIT 1", [user.accountId]);
+
 async function welcomeNewContact(user, email) {
-	const newsletter = await m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
-	const contact = await m.Contact.create({ accountId: user.accountId, newsletterId: user.newsletterId, email, status: "active" });
+	const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
+	const contact = await insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email, status: "active", subscribedAt: new Date() });
 	return m.sending.queueWelcomeEmail({ newsletter, contact });
 }
 
@@ -58,11 +76,25 @@ async function draft(user, subject = "Issue") {
 }
 
 async function loadAccount(user) {
-	return m.Account.findById(user.accountId).lean();
+	return findAccount(user.accountId);
+}
+
+// The webhook stores events; the jobs Worker applies them.
+async function runEventJobs() {
+	for (const { _id } of await getAll("SELECT _id FROM job_outbox WHERE kind = 'postshiba-event' AND completedAt IS NULL ORDER BY createdAt, rowid")) {
+		await m.postshibaWebhook.handlePostshibaEvent((await readJob(_id)).payload);
+		await completeJob(_id);
+	}
 }
 
 // PostShiba's webhook as it posts in production: one signed event per request, naming the message by its own id.
-function postWebhook(event) {
+async function postWebhook(event) {
+	const response = await postWebhookOnly(event);
+	await runEventJobs();
+	return response;
+}
+
+function postWebhookOnly(event) {
 	const body = JSON.stringify([event]);
 	const timestamp = String(Math.floor(Date.now() / 1000));
 	const signature = `sha256=${crypto.createHmac("sha256", POSTSHIBA.webhookSecret).update(`${timestamp}.${body}`).digest("hex")}`;
@@ -83,8 +115,8 @@ async function customer(email, slug) {
 	const domain = `${slug}.dev`;
 	assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain }))), { ok: true, domain });
 	fake.verifyDomain(domain);
-	await m.Domain.updateOne({ accountId: user.accountId, domain }, { $unset: { checkedAt: 1 } });
-	const stored = await m.Domain.findOne({ accountId: user.accountId, domain }).lean();
+	await execute("UPDATE domains SET checkedAt = NULL WHERE accountId = ? AND domain = ?", [user.accountId, domain]);
+	const stored = await findDomain(user, domain);
 	assert.deepEqual(await as(user, () => m.domains.checkDomainAction(String(stored._id))), { ok: true, verified: true, archiveHostVerified: false });
 	assert.equal((await saveFrom(user, `hello@${domain}`)).ok, true);
 	user.account = await loadAccount(user);
@@ -98,7 +130,7 @@ async function importContacts(user, emails) {
 }
 
 before(async () => {
-	app = await startTestApp({ ...POSTSHIBA_ENV, QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp(POSTSHIBA_ENV);
 	fake = createFakePostshiba();
 	fake.install();
 	m = {
@@ -108,20 +140,14 @@ before(async () => {
 		domains: await import("../app/(app)/domains/actions.js"),
 		admin: await import("../app/admin/actions.js"),
 		sending: await import("../lib/sending.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		webhookRoute: await import("../app/api/webhooks/postshiba/route.js"),
+		postshibaWebhook: await import("../lib/postshiba-webhook.js"),
 		billing: await import("../lib/billing.js"),
 		accounts: await import("../lib/accounts.js"),
 		tenants: await import("../lib/tenants.js"),
 		providers: await import("../lib/email-provider/index.js"),
 		postshibaAdapter: await import("../lib/email-provider/postshiba.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Domain: (await import("../models/Domain.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
-		Suppression: (await import("../models/Suppression.js")).default,
 	};
 });
 
@@ -151,11 +177,14 @@ describe("PostShiba tenants", () => {
 		assert.equal(postshiba.bulkCredential.password, undefined, "reads leave the password out");
 		assert.equal(postshiba.transactionalCredential.password, undefined, "never stored for the transactional cluster");
 
-		const raw = await mongoose.connection.db.collection("accounts").findOne({ _id: user.accountId });
+		// Kept apart from the account row, in account_secrets, encrypted.
+		const raw = await getOne("SELECT * FROM accounts WHERE _id = ?", [user.accountId]);
+		const { postshibaPassword } = await getOne("SELECT postshibaPassword FROM account_secrets WHERE accountId = ?", [user.accountId]);
 		const bulk = credentials.find(({ cluster_id }) => cluster_id === POSTSHIBA.bulkClusterId);
-		assert.match(raw.postshiba.bulkCredential.password, /^v1\./);
-		assert.ok(!JSON.stringify(raw).includes(bulk.password), "never in plain text");
-		assert.equal(decryptSecret(raw.postshiba.bulkCredential.password, { context: `postshiba-smtp:${user.accountId}:${POSTSHIBA.bulkClusterId}` }), bulk.password);
+		assert.match(postshibaPassword, /^v1\./);
+		assert.ok(!JSON.stringify(raw).includes(bulk.password) && !postshibaPassword.includes(bulk.password), "never in plain text");
+		assert.equal(raw.postshiba.bulkCredential.password, undefined, "not in the account row");
+		assert.equal(await decryptSecret(postshibaPassword, { context: `postshiba-smtp:${user.accountId}:${POSTSHIBA.bulkClusterId}` }), bulk.password);
 
 		const listed = (await m.accounts.listAccountsForAdmin()).find(({ _id }) => String(_id) === String(user.accountId));
 		assert.equal(listed.postshiba.tenantId, tenants[0].id);
@@ -188,7 +217,7 @@ describe("PostShiba tenants", () => {
 		assert.equal(account.postshiba.provisionedAt, undefined);
 
 		// A lost write: PostShiba has the tenant, MailCheap forgot it.
-		await m.Account.updateOne({ _id: user.accountId }, { $unset: { "postshiba.tenantId": 1 } });
+		await execute("UPDATE accounts SET postshiba = json_remove(postshiba, '$.tenantId') WHERE _id = ?", [user.accountId]);
 		await m.tenants.provisionTenant(user.accountId);
 		account = await loadAccount(user);
 		const tenants = [...fake.state.tenants.values()].filter((tenant) => tenant.slug === `mc-${user.accountId}`);
@@ -203,7 +232,7 @@ describe("PostShiba domains", () => {
 		const user = await signIn("ps-domain@example.com");
 		await activate(user);
 		assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain: "letters.dev" }))), { ok: true, domain: "letters.dev" });
-		const domain = await m.Domain.findOne({ accountId: user.accountId }).lean();
+		const domain = await findDomain(user, "letters.dev");
 		const atPostshiba = fake.state.domains.get(domain.providerDomainId);
 		assert.equal(atPostshiba.tenant_id, (await loadAccount(user)).postshiba.tenantId, "in the account's own tenant");
 		assert.equal(domain.provider, "postshiba");
@@ -222,11 +251,11 @@ describe("PostShiba domains", () => {
 
 		fake.verifyDomain("letters.dev");
 		for (let index = 0; index < 6; index++) {
-			await m.Domain.updateOne({ accountId: user.accountId, _id: domain._id }, { $set: { checkedAt: new Date(Date.now() - 120_000) } });
+			await execute("UPDATE domains SET checkedAt = ? WHERE accountId = ? AND _id = ?", [Date.now() - 120_000, user.accountId, domain._id]);
 			assert.equal((await as(user, () => m.domains.checkDomainAction(String(domain._id)))).verified, true);
 		}
 		assert.equal(verifyCalls(), 6);
-		await m.Domain.updateOne({ accountId: user.accountId, _id: domain._id }, { $set: { checkedAt: new Date(Date.now() - 120_000) } });
+		await execute("UPDATE domains SET checkedAt = ? WHERE accountId = ? AND _id = ?", [Date.now() - 120_000, user.accountId, domain._id]);
 		await as(user, () => m.domains.checkDomainAction(String(domain._id)));
 		assert.deepEqual([verifyCalls(), reads()], [6, readsBefore + 1], "over the account's share: a read instead");
 
@@ -237,7 +266,7 @@ describe("PostShiba domains", () => {
 	test("a domain stays in its own account and tenant: another can't add, check or remove it", async () => {
 		const owner = await customer("ps-owner@example.com", "ps-owner");
 		const other = await customer("ps-other@example.com", "ps-other");
-		const domain = await m.Domain.findOne({ accountId: owner.accountId, domain: "ps-owner.dev" }).lean();
+		const domain = await findDomain(owner, "ps-owner.dev");
 		const domainsBefore = fake.state.domains.size;
 		assert.deepEqual(await as(other, () => m.domains.addDomainAction(null, form({ domain: "ps-owner.dev" }))), {
 			error: "ps-owner.dev is used by another MailCheap account",
@@ -251,20 +280,20 @@ describe("PostShiba domains", () => {
 
 	test("a domain verified at SES before the switch sends again once its PostShiba records are in", async () => {
 		const user = await customer("ps-switch@example.com", "switched");
-		await m.Domain.create({ accountId: user.accountId, domain: "old-ses.dev", archiveHost: "news.old-ses.dev", mailFromDomain: "bounce.old-ses.dev", verified: true, dkimStatus: "SUCCESS" });
+		await insertRow("domains", { accountId: user.accountId, domain: "old-ses.dev", archiveHost: "news.old-ses.dev", mailFromDomain: "bounce.old-ses.dev", verified: true, dkimStatus: "SUCCESS" });
 		assert.equal((await saveFrom(user, "hi@old-ses.dev")).ok, true);
 		const id = await draft(user);
 		assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /old-ses.dev isn't verified yet/);
 
-		const domain = await m.Domain.findOne({ accountId: user.accountId, domain: "old-ses.dev" }).lean();
+		const domain = await findDomain(user, "old-ses.dev");
 		await as(user, () => m.domains.checkDomainAction(String(domain._id)));
-		const moved = await m.Domain.findOne({ accountId: user.accountId, _id: domain._id }).lean();
+		const moved = await findDomain(user, "old-ses.dev");
 		assert.equal(moved.provider, "postshiba");
 		assert.equal(moved.mailFromDomain, "rp.old-ses.dev");
 		assert.equal(moved.verified, false);
 		assert.ok(fake.state.domains.has(moved.providerDomainId));
 		fake.verifyDomain("old-ses.dev");
-		await m.Domain.updateOne({ accountId: user.accountId, _id: domain._id }, { $unset: { checkedAt: 1 } });
+		await execute("UPDATE domains SET checkedAt = NULL WHERE accountId = ? AND _id = ?", [user.accountId, domain._id]);
 		await as(user, () => m.domains.checkDomainAction(String(domain._id)));
 		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
 	});
@@ -297,7 +326,7 @@ describe("PostShiba sending", () => {
 		const id = await draft(user, "Issue 7");
 		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
 
-		const message = await m.Message.findOne({ accountId: user.accountId, kind: "test" }).lean();
+		const message = await findMessage(user, "kind = 'test'");
 		const { clusterId, key, body, response } = fake.state.sends.at(-1);
 		assert.equal(clusterId, POSTSHIBA.transactionalClusterId);
 		assert.equal(key, String(message._id));
@@ -310,7 +339,7 @@ describe("PostShiba sending", () => {
 		assert.equal(body.headers["Feedback-ID"], undefined, "PostShiba sets its own");
 		assert.deepEqual(body.unique_args, { account_id: String(user.accountId), message_id: String(message._id), kind: "test", campaign_id: id });
 		assert.ok(response.message_id);
-		assert.equal(message.providerMessageId, undefined, "the Message-ID /sends answers with isn't the id PostShiba's events carry");
+		assert.equal(message.providerMessageId, null, "the Message-ID /sends answers with isn't the id PostShiba's events carry");
 		assert.equal(message.status, "sent");
 	});
 
@@ -335,9 +364,9 @@ describe("PostShiba sending", () => {
 
 		for (const type of ["processed", "delivered"]) {
 			const response = await postWebhook(event(type, type === "delivered" && { response: "250 2.0.0 OK gsmtp" }));
-			assert.deepEqual(await response.json(), { ok: true, handled: 1 }, type);
+			assert.deepEqual(await response.json(), { ok: true, queued: 1 }, type);
 		}
-		const message = await m.Message.findOne({ accountId: user.accountId, kind: "test", campaignId: id }).lean();
+		const message = await findMessage(user, "kind = 'test' AND campaignId = ?", [id]);
 		assert.equal(message.status, "delivered");
 		assert.ok(message.deliveredAt);
 		assert.equal(message.providerMessageId, sgMessageId, "matched from then on by PostShiba's id");
@@ -362,27 +391,26 @@ describe("PostShiba sending", () => {
 		assert.deepEqual(Object.keys(args).sort(), ["account_id", "campaign_id", "kind", "message_id"]);
 		assert.equal(args.account_id, String(user.accountId));
 		assert.equal(args.kind, "campaign");
-		assert.ok(await m.Message.exists({ accountId: user.accountId, _id: args.message_id, status: "sent" }));
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "sent");
+		assert.ok(await findMessage(user, "_id = ? AND status = 'sent'", [args.message_id]));
+		assert.equal((await findCampaign(user, id)).status, "sent");
 	});
 
-	test("a full bulk cluster puts the batch back, and QStash brings it after the cap resets", async () => {
+	test("a full bulk cluster puts the batch back, and the outbox brings it after the cap resets", async () => {
 		const user = await customer("ps-full@example.com", "ps-full");
 		await importContacts(user, ["full1@example.org", "full2@example.org"]);
 		const id = await draft(user, "Capped");
 		fake.fail({ path: /^\/inject$/, status: 429, body: { error: "hourly send limit reached" } });
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(id, {})), { ok: true });
-		const response = await runNextJob();
-		assert.equal(response.status, 200);
-		assert.equal((await response.json()).republished, true);
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id, status: "queued" }), 2, "nothing lost");
+		await runNextJob();
+		assert.equal(await countMessages(user, id, "queued"), 2, "nothing lost");
 
-		const retry = published.at(-1);
-		assert.ok(retry.url.endsWith("/api/jobs/send-batch"));
-		assert.ok(retry.notBefore >= Math.floor(Date.now() / 1000) + 60, "after the cap resets, not in a loop");
-		assert.deepEqual(retry.flowControl, { key: `account-${user.accountId}`, parallelism: 1 });
+		const retry = await latestJob();
+		assert.deepEqual(JSON.parse(retry.payload).messageIds.length, 2);
+		assert.equal(retry.publishedAt, null, "waits in the outbox");
+		assert.ok(retry.availableAt.getTime() >= Date.now() + 59_000, "after the cap resets, not in a loop");
+		await releaseDeferredJobs();
 		await runJobs();
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id, status: "sent" }), 2);
+		assert.equal(await countMessages(user, id, "sent"), 2);
 	});
 
 	test("an address PostShiba suppresses is skipped and kept out of the account's next sends", async () => {
@@ -393,11 +421,11 @@ describe("PostShiba sending", () => {
 		await as(user, () => m.campaigns.sendCampaign(id, {}));
 		await runJobs();
 
-		const messages = await m.Message.find({ accountId: user.accountId, campaignId: id }).lean();
+		const messages = await getAll("SELECT email, status FROM messages WHERE accountId = ? AND campaignId = ?", [user.accountId, id]);
 		assert.deepEqual(Object.fromEntries(messages.map(({ email, status }) => [email, status])), { "gone@example.org": "suppressed", "here@example.org": "sent" });
-		const suppression = await m.Suppression.findOne({ accountId: user.accountId, email: "gone@example.org" }).lean();
+		const suppression = await getOne("SELECT reason FROM suppressions WHERE accountId = ? AND email = ?", [user.accountId, "gone@example.org"]);
 		assert.equal(suppression.reason, "provider");
-		assert.equal((await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean()).status, "sent");
+		assert.equal((await findCampaign(user, id)).status, "sent");
 	});
 
 	test("before PostShiba approves production sending, a campaign pauses with the reason", async () => {
@@ -407,10 +435,10 @@ describe("PostShiba sending", () => {
 		fake.fail({ path: /^\/inject$/, status: 200, body: { success_count: 0, fail_count: 1, failed_recipients: ["kyc@example.org"], errors: ["550 kyc_required"] } });
 		await as(user, () => m.campaigns.sendCampaign(id, {}));
 		await runJobs();
-		const campaign = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+		const campaign = await findCampaign(user, id);
 		assert.equal(campaign.status, "paused");
 		assert.match(campaign.pauseReason, /hasn't approved production sending/);
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId, campaignId: id, status: "queued" }), 1, "waits for the resume");
+		assert.equal(await countMessages(user, id, "queued"), 1, "waits for the resume");
 
 		fake.fail({ method: "POST", path: /\/sends$/, status: 403, body: { error: "kyc_required", field: "to" } });
 		assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /hasn't approved production sending/);
@@ -436,18 +464,19 @@ describe("PostShiba sending", () => {
 		);
 		fake.fail({ method: "POST", path: /\/sends$/, status: 429, body: { error: "throttled", field: "base", message: "This cluster hit its hourly send limit" } });
 		const sendsBefore = fake.state.sends.length;
-		const queued = await welcomeNewContact(user, "new-reader@example.org");
-		assert.equal(queued.retry, true);
-		const message = await m.Message.findOne({ accountId: user.accountId, kind: "welcome" }).lean();
+		const welcome = await welcomeNewContact(user, "new-reader@example.org");
+		assert.equal(welcome.retry, true);
+		const message = await findMessage(user, "kind = 'welcome'");
 		assert.equal(message.status, "queued", "kept for later");
 		assert.equal(fake.state.sends.length, sendsBefore);
-		const retry = published.at(-1);
-		assert.deepEqual(retry.body, { accountId: String(user.accountId), messageIds: [String(message._id)] });
-		assert.ok(retry.notBefore > Math.floor(Date.now() / 1000) + 60);
+		const retry = await latestJob();
+		assert.deepEqual(JSON.parse(retry.payload).messageIds, [String(message._id)]);
+		assert.ok(retry.availableAt.getTime() > Date.now() + 60_000);
 
+		await releaseDeferredJobs();
 		await runJobs();
 		assert.equal(fake.state.sends.at(-1).key, String(message._id));
-		assert.equal((await m.Message.findOne({ accountId: user.accountId, _id: message._id }).lean()).status, "sent");
+		assert.equal((await findMessage(user, "_id = ?", [message._id])).status, "sent");
 	});
 });
 
@@ -456,7 +485,7 @@ describe("clusters", () => {
 		const user = await customer("ps-last-chance@example.com", "ps-last-chance");
 		const provider = m.postshibaAdapter.postshibaProvider;
 		const tenant = await provider.ensureTenant(user.account);
-		const message = { _id: new mongoose.Types.ObjectId(), accountId: user.accountId, kind: "last-chance", campaignId: new mongoose.Types.ObjectId() };
+		const message = { _id: newId(), accountId: user.accountId, kind: "last-chance", campaignId: newId() };
 		const email = { from: '"Jane" <hello@ps-last-chance.dev>', to: "cold@example.org", subject: "Still want it?", html: "<p>Keep it?</p>", text: "Keep it?", headers: {} };
 		const before = { injects: fake.state.injects.length, sends: fake.state.sends.length };
 
@@ -475,7 +504,7 @@ describe("the shared address on PostShiba", () => {
 		const user = await signIn("ps-shared@example.com");
 		await activate(user);
 		await createNewsletter(user, "ps-shared");
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await findNewsletter(user);
 		const subdomain = "ps-shared.mailcheapmail.com";
 		assert.equal(newsletter.fromEmail, `hello@${subdomain}`);
 		const atPostshiba = fake.state.domains.get(newsletter.sharedSender.providerDomainId);
@@ -497,20 +526,20 @@ describe("the shared address on PostShiba", () => {
 		assert.equal(body.from, `"Jane" <hello@${subdomain}>`);
 		assert.equal(body.reply_to, "ps-shared@example.com", "replies go to the owner");
 		assert.match(body.headers["List-Unsubscribe"], /^<https:\/\/ps-shared\.mailcheapmail\.com\/api\/unsubscribe\?token=/);
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender.verified, true);
+		assert.equal((await findNewsletter(user)).sharedSender.verified, true);
 	});
 
 	test("a newsletter set up before the plan gets nothing at PostShiba or in DNS, then its subdomain when the plan starts", async () => {
 		const user = await signIn("ps-early@example.com");
 		const before = { tenants: fake.state.tenants.size, domains: fake.state.domains.size, records: dnsRecords.size };
 		await createNewsletter(user, "ps-early");
-		let newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		let newsletter = await findNewsletter(user);
 		assert.equal(newsletter.fromEmail, "hello@ps-early.mailcheapmail.com");
 		assert.equal(newsletter.sharedSender?.domain, undefined);
 		assert.deepEqual({ tenants: fake.state.tenants.size, domains: fake.state.domains.size, records: dnsRecords.size }, before);
 
 		await m.billing.applySubscription(await loadAccount(user), subscription("ps-early"));
-		newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		newsletter = await findNewsletter(user);
 		assert.equal(newsletter.sharedSender.domain, "ps-early.mailcheapmail.com");
 		assert.equal(fake.state.domains.get(newsletter.sharedSender.providerDomainId).tenant_id, (await loadAccount(user)).postshiba.tenantId);
 		assert.equal(newsletter.sharedSender.dnsRecordIds.length, 3);
@@ -521,22 +550,26 @@ describe("the shared address on PostShiba", () => {
 		await activate(user);
 		fake.fail({ method: "POST", path: /\/sending_domains$/, status: 503, body: { error: "unavailable" } });
 		await createNewsletter(user, "ps-waiting");
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender, undefined, "the newsletter is saved anyway");
+		assert.equal((await findNewsletter(user)).sharedSender, null, "the newsletter is saved anyway");
 
 		fake.state.isDnsVisible = false;
 		try {
 			const id = await draft(user);
 			assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /hello@ps-waiting.mailcheapmail.com is still being set up/);
-			const { sharedSender } = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+			const { sharedSender } = await findNewsletter(user);
 			assert.equal(sharedSender.domain, "ps-waiting.mailcheapmail.com", "set up again by the send");
 			assert.equal(sharedSender.verified, false);
 
 			fake.state.isDnsVisible = true;
 			assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /still being set up/, "looked at once a minute at most");
-			await m.Newsletter.updateOne({ accountId: user.accountId, _id: user.newsletterId }, { $set: { "sharedSender.checkedAt": new Date(Date.now() - 120_000) } });
+			await execute("UPDATE newsletters SET sharedSender = json_set(sharedSender, '$.checkedAt', ?) WHERE accountId = ? AND _id = ?", [
+				new Date(Date.now() - 120_000).toISOString(),
+				user.accountId,
+				user.newsletterId,
+			]);
 			assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
 
-			await m.Newsletter.updateOne({ accountId: user.accountId, _id: user.newsletterId }, { $set: { fromEmail: "hello@ps-shared.mailcheapmail.com" } });
+			await execute("UPDATE newsletters SET fromEmail = 'hello@ps-shared.mailcheapmail.com' WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
 			assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /The shared address for this newsletter is hello@ps-waiting/, "never another account's");
 		} finally {
 			fake.state.isDnsVisible = true;
@@ -548,7 +581,11 @@ describe("PostShiba blocks", () => {
 	test("blocking an account suspends its tenant: nothing it sends goes out until an admin unblocks it", async () => {
 		const user = await customer("ps-pause@example.com", "ps-pause");
 		const id = await draft(user);
-		await m.Newsletter.updateOne({ accountId: user.accountId, _id: user.newsletterId }, { $set: { welcome: { enabled: true, subject: "Hi", markdown: "Welcome." } } });
+		await execute("UPDATE newsletters SET welcome = ? WHERE accountId = ? AND _id = ?", [
+			JSON.stringify({ enabled: true, subject: "Hi", markdown: "Welcome." }),
+			user.accountId,
+			user.newsletterId,
+		]);
 		const admin = await signIn("admin@example.com");
 		assert.deepEqual(await as(admin, () => m.admin.blockAccountAction(String(user.accountId), "Review")), { ok: true });
 		const tenantId = user.account.postshiba.tenantId;

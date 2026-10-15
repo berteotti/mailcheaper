@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { execute, getAll, getOne } from "../lib/db.js";
 import { activate, anonymous, as, callApi, catchRedirect, form, platformEmails, signIn, startTestApp } from "./helpers/app.mjs";
 import { sent, state } from "./stubs/ses.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
@@ -62,7 +63,7 @@ function hasRecordsFor(host) {
 }
 
 function slugsOf(user) {
-	return m.Newsletter.find({ accountId: user.accountId }).sort({ createdAt: 1 }).lean().then((newsletters) => newsletters.map(({ slug }) => slug));
+	return getAll("SELECT slug FROM newsletters WHERE accountId = ? ORDER BY createdAt, _id", [user.accountId]).then((newsletters) => newsletters.map(({ slug }) => slug));
 }
 
 before(async () => {
@@ -82,7 +83,6 @@ before(async () => {
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		welcome: await import("../app/welcome/actions.js"),
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 });
 
@@ -102,7 +102,6 @@ describe("hosts", () => {
 			"mcp.mailcheap.ai",
 			"admin.mailcheap.ai",
 			"localhost:3000",
-			"mailcheap-git-main-marc-lou.vercel.app",
 		];
 		for (const host of appHosts) assert.deepEqual(await resolve(host), { isArchiveHost: false, slug: null }, host);
 		assert.deepEqual(await resolve("weekly.mailcheap.ai"), { isArchiveHost: true, slug: "weekly" });
@@ -164,7 +163,7 @@ describe("reserved slugs", () => {
 describe("shared addresses", () => {
 	test("hello@<slug>.mailcheap.ai, with its records from the DNS helper and its links on the newsletter's host", async () => {
 		const user = await customer("weekly@example.com", "weekly");
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? ORDER BY createdAt, _id LIMIT 1", [user.accountId]);
 		assert.equal(newsletter.fromEmail, "hello@weekly.mailcheap.ai");
 		const records = newsletter.sharedSender.dnsRecordIds.map((id) => dnsRecords.get(id));
 		assert.deepEqual(
@@ -189,9 +188,10 @@ describe("shared addresses", () => {
 
 	test("a slug saved before MailCheap kept it gets no sending subdomain, and the one of its old slug goes", async () => {
 		const user = await customer("legacy@example.com", "legacy-news");
-		const { sharedSender: old } = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
-		await m.Newsletter.updateOne({ accountId: user.accountId, _id: user.newsletterId }, { $set: { slug: "r", fromEmail: "hello@r.mailcheap.ai" } });
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
+		const findNewsletter = () => getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
+		const { sharedSender: old } = await findNewsletter();
+		await execute("UPDATE newsletters SET slug = 'r', fromEmail = 'hello@r.mailcheap.ai' WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
+		const newsletter = await findNewsletter();
 
 		assert.equal(await m.sharedSender.syncSharedSender({ account: user.account, newsletter }), null);
 		assert.equal(state.identities.has("r.mailcheap.ai"), false);
@@ -202,7 +202,7 @@ describe("shared addresses", () => {
 
 	test("a new slug whose records the DNS helper refuses leaves nothing at the provider, and a later save sets it up", async () => {
 		const user = await customer("refused@example.com", "refused-old");
-		const { sharedSender: old } = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const { sharedSender: old } = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		dnsRecords.set("rec_by_hand", { id: "rec_by_hand", slug: "by-hand", type: "CNAME", name: "refused-new.mailcheap.ai", value: "cname.vercel-dns.com" });
 		const save = () =>
 			as(user, () =>
@@ -210,8 +210,8 @@ describe("shared addresses", () => {
 			);
 
 		assert.equal((await save()).ok, true, "the newsletter is saved either way");
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
-		assert.deepEqual([newsletter.slug, newsletter.fromEmail, newsletter.sharedSender], ["refused-new", "hello@refused-new.mailcheap.ai", undefined]);
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
+		assert.deepEqual([newsletter.slug, newsletter.fromEmail, newsletter.sharedSender], ["refused-new", "hello@refused-new.mailcheap.ai", null]);
 		assert.equal(state.identities.has("refused-new.mailcheap.ai"), false, "the domain is taken back at the provider");
 		assert.deepEqual([...dnsRecords.values()].filter(({ name }) => name.endsWith("refused-new.mailcheap.ai")).map(({ id }) => id), ["rec_by_hand"]);
 		assert.equal(state.identities.has(old.domain), false);
@@ -223,7 +223,7 @@ describe("shared addresses", () => {
 
 		dnsRecords.delete("rec_by_hand");
 		assert.equal((await save()).ok, true);
-		const { sharedSender } = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const { sharedSender } = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		assert.equal(sharedSender.domain, "refused-new.mailcheap.ai");
 		assert.ok(state.identities.has("refused-new.mailcheap.ai"));
 		assert.ok(sharedSender.dnsRecordIds.every((id) => dnsRecords.get(id)?.slug === "refused-new"));
@@ -234,7 +234,7 @@ describe("sessions", () => {
 	test("the session cookie is host-only, and Better Auth trusts mailcheap.ai's origin alone", async () => {
 		const context = await (await m.auth.getAuth()).$context;
 		const { name, attributes } = context.authCookies.sessionToken;
-		assert.equal(name, "__Secure-better-auth.session_token");
+		assert.equal(name, "__Secure-mailcheap.session_token");
 		assert.deepEqual([attributes.domain, attributes.httpOnly, attributes.secure, attributes.sameSite], [undefined, true, true, "lax"]);
 		assert.deepEqual(context.trustedOrigins, [APP_URL]);
 		for (const origin of ["https://weekly.mailcheap.ai", "https://www.mailcheap.ai", "http://mailcheap.ai"]) assert.equal(context.isTrustedOrigin(origin), false, origin);
@@ -264,7 +264,7 @@ describe("sessions", () => {
 			const signedOut = await signOut(APP_URL);
 			assert.equal(signedOut.status, 200);
 			const setCookies = signedOut.headers.getSetCookie();
-			assert.ok(setCookies.some((header) => header.startsWith("__Secure-better-auth.session_token=")));
+			assert.ok(setCookies.some((header) => header.startsWith("__Secure-mailcheap.session_token=")));
 			for (const header of setCookies) assert.doesNotMatch(header, /domain=/i, header);
 		} finally {
 			console.error = error;

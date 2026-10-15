@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import mongoose from "mongoose";
-import { activate, addVerifiedDomain, anonymous, as, catchRedirect, form, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { execute, getOne } from "../lib/db.js";
+import { activate, addVerifiedDomain, anonymous, as, catchRedirect, findAccount, form, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 
 // The dashboard's get-started panel: each step is done from what the account has, nothing another account has
 // counts, the list finishes for good once every step but the optional domain is done, and dismissing it hides
@@ -20,8 +20,6 @@ before(async () => {
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		auth: await import("../lib/auth.js"),
 		getStarted: await import("../lib/get-started.js"),
-		Account: (await import("../models/Account.js")).default,
-		ApiKey: (await import("../models/ApiKey.js")).default,
 	};
 });
 
@@ -61,11 +59,24 @@ function createKey(user, level) {
 }
 
 // What Better Auth keeps when someone clicks Allow on the consent page (tests/oauth.test.mjs goes through it).
-function connectApp(user) {
-	const now = new Date();
-	return mongoose.connection.db
-		.collection("oauthConsent")
-		.insertOne({ clientId: "https://chatgpt.com/connector/mailcheap", userId: user.userId, scopes: ["openid", "mcp"], createdAt: now, updatedAt: now });
+async function connectApp(user) {
+	const now = new Date().toISOString();
+	const clientId = "https://chatgpt.com/connector/mailcheap";
+	await execute("INSERT OR IGNORE INTO oauthClient (id, clientId, redirectUris, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)", [
+		"chatgpt",
+		clientId,
+		JSON.stringify(["https://chatgpt.com/connector/oauth/callback"]),
+		now,
+		now,
+	]);
+	await execute("INSERT INTO oauthConsent (id, clientId, userId, scopes, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?)", [
+		`consent-${user.userId}`,
+		clientId,
+		user.userId,
+		JSON.stringify(["openid", "mcp"]),
+		now,
+		now,
+	]);
 }
 
 function tomorrow() {
@@ -73,7 +84,7 @@ function tomorrow() {
 }
 
 function loadAccount(user) {
-	return m.Account.findById(user.accountId).lean();
+	return findAccount(user.accountId);
 }
 
 async function check(user) {
@@ -133,7 +144,7 @@ describe("the steps", () => {
 		assert.deepEqual(await doneSteps(user), [], "a signups only key can't run an agent");
 		await createKey(user, "full");
 		assert.deepEqual(await doneSteps(user), ["agent"]);
-		const key = await m.ApiKey.findOne({ accountId: user.accountId, level: "full" }).lean();
+		const key = await getOne("SELECT _id FROM api_keys WHERE accountId = ? AND level = 'full'", [user.accountId]);
 		assert.deepEqual(await as(user, () => m.apiKeys.revokeApiKey(key._id)), { ok: true });
 		assert.deepEqual(await doneSteps(user), [], "a revoked key connects nothing");
 
@@ -185,7 +196,7 @@ describe("the list", () => {
 		assert.ok(account.onboarding.checklistFinishedAt instanceof Date);
 		assert.equal(m.getStarted.isGetStartedOpen(account), false);
 
-		const key = await m.ApiKey.findOne({ accountId: user.accountId, level: "full" }).lean();
+		const key = await getOne("SELECT _id FROM api_keys WHERE accountId = ? AND level = 'full'", [user.accountId]);
 		await as(user, () => m.apiKeys.revokeApiKey(key._id));
 		assert.equal(m.getStarted.isGetStartedOpen(await loadAccount(user)), false, "a key revoked later doesn't bring it back");
 	});

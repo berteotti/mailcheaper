@@ -97,6 +97,22 @@ test("customers can't claim MailCheap's domains, and archive hosts are subdomain
 	assert.match(getArchiveHostProblem("rp.example.com", "example.com"), /return path/);
 });
 
+test("an admin can add the parent domain of the app's host, never the host itself", () => {
+	const options = { sharedDomain: null, appHost: "mail.example.com" };
+	assert.match(getDomainProblem("example.com", options), /can't be added/, "not a customer");
+	assert.equal(getDomainProblem("example.com", { ...options, isAdmin: true }), null);
+	for (const domain of ["mail.example.com", "app.mail.example.com", "mailcheap.ai", "amazonses.com"]) {
+		assert.match(getDomainProblem(domain, { ...options, isAdmin: true }), /can't be added/, domain);
+	}
+	assert.match(getDomainProblem("example.com", { sharedDomain: "news.example.com", appHost: "mail.example.com", isAdmin: true }), /can't be added/, "or the shared domain's");
+
+	const hostOptions = { appHost: "mail.example.com" };
+	assert.equal(getArchiveHostProblem("news.example.com", "example.com", hostOptions), null);
+	for (const host of ["mail.example.com", "x.mail.example.com"]) {
+		assert.match(getArchiveHostProblem(host, "example.com", hostOptions), /MailCheap's own/, host);
+	}
+});
+
 test("with the app's own domain shared, <slug>.mailcheap.ai is the shared address and the rest of mailcheap.ai stays MailCheap's", () => {
 	const sharedDomain = "mailcheap.ai";
 	const options = { sharedDomain, appHost: "mailcheap.ai" };
@@ -164,12 +180,22 @@ test("the domains page lists every record with its status in words", () => {
 			{ purpose: "mail-from", type: "MX", name: "bounce.example.com", value: "10 feedback-smtp.us-east-1.amazonses.com" },
 		],
 	};
-	const steps = Object.fromEntries(getDomainSetup(domain, { cnameTarget: "cname.mailcheap.ai" }).map((step) => [step.key, step]));
+	const options = { cnameTarget: "cname.mailcheap.ai", appHost: "mailcheap.ai" };
+	const steps = Object.fromEntries(getDomainSetup(domain, options).map((step) => [step.key, step]));
 	assert.equal(steps.dkim.status.label, "Found");
 	assert.equal(steps["mail-from"].status.label, "Waiting for DNS");
 	assert.deepEqual(steps.archive.records, [{ type: "CNAME", name: "news.example.com", value: "cname.mailcheap.ai" }]);
+	assert.match(steps.archive.description, /^Add this CNAME record where you manage example\.com's DNS.*until then they stay on mailcheap\.ai\.$/);
 	assert.deepEqual(steps.dmarc.records, [{ type: "TXT", name: "_dmarc.example.com", value: "v=DMARC1; p=none;" }]);
-	assert.equal(getDomainSummary(domain).label, "Sending ready, archive waiting");
-	assert.equal(getDomainSummary({ ...domain, archiveHostVerified: true }).label, "Ready");
-	assert.equal(getDomainSummary({ ...domain, verified: false, dkimStatus: "FAILED" }).label, "Records not found");
+	assert.equal(getDomainSummary(domain, options).label, "Sending ready, archive waiting");
+	assert.equal(getDomainSummary({ ...domain, archiveHostVerified: true }, options).label, "Ready");
+	assert.equal(getDomainSummary({ ...domain, verified: false, dkimStatus: "FAILED" }, options).label, "Records not found");
+});
+
+test("without ARCHIVE_CNAME_TARGET, the archive step says it isn't available and a verified domain is ready", () => {
+	const domain = { domain: "example.com", archiveHost: "news.example.com", dkimStatus: "SUCCESS", mailFromStatus: "SUCCESS", verified: true, records: [] };
+	const archive = getDomainSetup(domain, { cnameTarget: null, appHost: "mail.example.org" }).find(({ key }) => key === "archive");
+	assert.deepEqual([archive.status.label, archive.records], ["Not available", []]);
+	assert.match(archive.description, /^Not available on this server: .* stay on mail\.example\.org\. Sending doesn't need it\./);
+	assert.equal(getDomainSummary(domain, { cnameTarget: null }).label, "Ready");
 });

@@ -2,7 +2,6 @@ import { Link2Off } from "lucide-react";
 import CardNotice from "@/components/CardNotice";
 import FormKeep from "@/components/FormKeep";
 import { getArchiveUrls } from "@/lib/archive-hosts";
-import { connectDb } from "@/lib/db";
 import { verifyKeepToken } from "@/lib/last-chance";
 import { findNewsletterAnywhere } from "@/lib/public-newsletters";
 
@@ -38,7 +37,6 @@ export default async function KeepPage({ searchParams }) {
 
 async function getNewsletter(newsletterId) {
 	try {
-		await connectDb();
 		return await findNewsletterAnywhere({ _id: newsletterId });
 	} catch (error) {
 		console.error("[keep] Could not load the newsletter:", error.message);

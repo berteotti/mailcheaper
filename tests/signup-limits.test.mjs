@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import mongoose from "mongoose";
+import { execute, getValue, newId } from "../lib/db.js";
 import { getAliasPattern, getCanonicalEmail } from "../lib/email-aliases.js";
 import { as, catchRedirect, form, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 
@@ -30,7 +30,21 @@ describe("sign-ups on MailCheap Cloud", () => {
 	let m;
 	let nextIp = 0;
 
-	const users = () => mongoose.connection.db.collection("users");
+	const countUsers = (email) => getValue("SELECT count(*) FROM users WHERE email = ?", [email]);
+
+	// A user and their account from before these checks, as Better Auth and the sign-up wrote them.
+	async function insertUser(email) {
+		const now = new Date().toISOString();
+		const id = `before-${newId()}`;
+		await execute("INSERT INTO users (id, email, emailVerified, name, createdAt, updatedAt, inbox) VALUES (?, ?, 1, '', ?, ?, ?)", [
+			id,
+			email,
+			now,
+			now,
+			getCanonicalEmail(email),
+		]);
+		await execute("INSERT INTO accounts (_id, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?)", [newId(), id, Date.now(), Date.now()]);
+	}
 	const visitor = (email) => ({ email, jar: new Map(), ip: `203.0.113.${++nextIp}` });
 
 	// The sign-in form, step by step: { email } once the code is out, then where it leads or why not.
@@ -51,7 +65,6 @@ describe("sign-ups on MailCheap Cloud", () => {
 		m = {
 			auth: await import("../lib/auth.js"),
 			signin: await import("../app/signin/actions.js"),
-			Account: (await import("../models/Account.js")).default,
 		};
 	});
 
@@ -61,7 +74,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 		await signIn("jane.doe@gmail.com");
 		for (const alias of ["janedoe+2@gmail.com", "j.anedoe@googlemail.com"]) {
 			assert.deepEqual(await signUp(alias), { email: alias, error: m.auth.SIGNUP_ERRORS.email_alias }, alias);
-			assert.equal(await users().countDocuments({ email: alias }), 0);
+			assert.equal(await countUsers(alias), 0);
 		}
 		assert.equal(m.auth.SIGNUP_ERRORS.email_alias, "An account already uses this inbox under another address. Sign in with that address instead.");
 		assert.ok(await signIn("jane.doe@gmail.com"), "the first account signs in as before");
@@ -77,11 +90,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 	});
 
 	test("accounts that share an inbox from before keep signing in", async () => {
-		const now = new Date();
-		for (const email of ["janeroe@gmail.com", "jane.roe+old@gmail.com"]) {
-			const { insertedId } = await users().insertOne({ email, emailVerified: true, name: "", createdAt: now, updatedAt: now });
-			await m.Account.create({ ownerId: insertedId });
-		}
+		for (const email of ["janeroe@gmail.com", "jane.roe+old@gmail.com"]) await insertUser(email);
 		for (const email of ["janeroe@gmail.com", "jane.roe+old@gmail.com"]) assert.ok(await signIn(email), email);
 	});
 
@@ -96,9 +105,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 			context.internalAdapter.createUser({ email: "inside@mailinator.com", emailVerified: true, name: "" }),
 			(error) => error.body?.code === "email_disposable"
 		);
-		const now = new Date();
-		const { insertedId } = await users().insertOne({ email: "old@yopmail.com", emailVerified: true, name: "", createdAt: now, updatedAt: now });
-		await m.Account.create({ ownerId: insertedId });
+		await insertUser("old@yopmail.com");
 		assert.ok(await signIn("old@yopmail.com"));
 	});
 
@@ -111,7 +118,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 			email: "office4@example.com",
 			error: "Too many new accounts from your network today. Try again tomorrow.",
 		});
-		assert.equal(await users().countDocuments({ email: "office4@example.com" }), 0);
+		assert.equal(await countUsers("office4@example.com"), 0);
 		assert.deepEqual(await signUp("office1@example.com", network("office1@example.com")), { redirectedTo: "/" });
 		assert.deepEqual(await signUp("office4@example.com"), { redirectedTo: "/" }, "from another network");
 	});
@@ -120,7 +127,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 		await signIn("john.roe@gmail.com");
 		const refused = await signInWithGoogle(m, "johnroe+2@gmail.com");
 		assert.deepEqual(refused, { path: "/signin", error: "email_alias", isSignedIn: false });
-		assert.equal(await users().countDocuments({ email: "johnroe+2@gmail.com" }), 0);
+		assert.equal(await countUsers("johnroe+2@gmail.com"), 0);
 		assert.equal(m.auth.getSignupError(refused.error), m.auth.SIGNUP_ERRORS.email_alias);
 		assert.equal(m.auth.getSignupError("constructor"), null);
 		assert.deepEqual(await signInWithGoogle(m, "john.roe@gmail.com"), { path: "/", error: null, isSignedIn: true }, "the same address signs in");
@@ -129,7 +136,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 	test("an address Google hasn't verified opens no user and no account, so its owner never finds one waiting", async () => {
 		const refused = await signInWithGoogle(m, "jo@company.example", { verified: false });
 		assert.deepEqual(refused, { path: "/signin", error: "email_unverified", isSignedIn: false });
-		assert.equal(await users().countDocuments({ email: "jo@company.example" }), 0);
+		assert.equal(await countUsers("jo@company.example"), 0);
 		assert.equal(m.auth.getSignupError(refused.error), "Google hasn't verified this email. Sign in with a code instead.");
 		assert.deepEqual(await signInWithGoogle(m, "jo@company.example"), { path: "/", error: null, isSignedIn: true }, "once Google verified it");
 	});
@@ -160,7 +167,7 @@ async function signInWithGoogle(m, email, { verified = true } = {}) {
 		const callback = new Request(`http://localhost:3000/api/auth/callback/google?code=test-code&state=${url.searchParams.get("state")}`, { headers: { cookie } });
 		const response = await as(person, () => GET(callback));
 		const location = new URL(response.headers.get("location"), "http://localhost:3000");
-		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("better-auth.session_token=") && !line.startsWith("better-auth.session_token=;"));
+		const cookies = response.headers.getSetCookie().filter((line) => line.startsWith("mailcheap.session_token=") && !line.startsWith("mailcheap.session_token=;"));
 		return { path: location.pathname, error: location.searchParams.get("error"), isSignedIn: cookies.length > 0 };
 	} finally {
 		globalThis.fetch = previousFetch;

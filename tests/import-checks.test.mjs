@@ -5,7 +5,9 @@ import { normalizeEmail as normalizeCsvEmail } from "../lib/csv-import.js";
 import { getEmailSuggestion } from "../lib/email-typos.js";
 import { getDropReason, getSignupEmailProblem } from "../lib/import-checks.js";
 import { normalizeEmail } from "../lib/validation.js";
-import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
+import { getAll, getOne, getValue } from "../lib/db.js";
+import { insertRow } from "../lib/records.js";
+import { activate, anonymous, as, callApi, catchRedirect, findAccount, form, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 import { domainsWithoutMail } from "./stubs/mail-domains.mjs";
 
@@ -85,10 +87,6 @@ describe("contact imports", () => {
 			apiKeys: await import("../app/(app)/api-keys/actions.js"),
 			archive: await import("../app/archive/actions.js"),
 			core: await import("../lib/contact-import.js"),
-			Account: (await import("../models/Account.js")).default,
-			Contact: (await import("../models/Contact.js")).default,
-			ContactImport: (await import("../models/ContactImport.js")).default,
-			Suppression: (await import("../models/Suppression.js")).default,
 		};
 		user = await signIn("importer@example.com");
 		await activate(user);
@@ -98,6 +96,9 @@ describe("contact imports", () => {
 
 	after(() => app?.stop());
 
+	const findContact = (email) => getOne("SELECT * FROM contacts WHERE accountId = ? AND email = ?", [user.accountId, email]);
+	const findImport = (id) => getOne("SELECT * FROM contact_imports WHERE accountId = ? AND _id = ?", [user.accountId, id]);
+
 	test("an import needs the customer's word that these people agreed", async () => {
 		const rows = [{ email: "reader@example.org", status: "active" }];
 		for (const consent of [undefined, false, "true"]) {
@@ -105,12 +106,12 @@ describe("contact imports", () => {
 				error: "Confirm that these people agreed to receive your emails",
 			});
 		}
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId, email: "reader@example.org" }), 0);
-		assert.equal(await m.ContactImport.countDocuments({ accountId: user.accountId }), 0);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND email = ?", [user.accountId, "reader@example.org"]), 0);
+		assert.equal(await getValue("SELECT count(*) FROM contact_imports WHERE accountId = ?", [user.accountId]), 0);
 	});
 
 	test("dropped rows are counted by reason, and chunks add up in one import", async () => {
-		await m.Suppression.create({ accountId: user.accountId, email: "bounced@example.org", reason: "bounce" });
+		await insertRow("suppressions", { accountId: user.accountId, email: "bounced@example.org", reason: "bounce" });
 		const first = await as(user, () =>
 			m.contacts.importContacts({
 				newsletterId: user.newsletterId,
@@ -142,18 +143,18 @@ describe("contact imports", () => {
 		);
 		assert.deepEqual({ created: second.created, existing: second.existing, importId: second.importId }, { created: 1, existing: 1, importId: first.importId });
 
-		const stored = await m.ContactImport.findOne({ accountId: user.accountId, _id: first.importId }).lean();
+		const stored = await findImport(first.importId);
 		assert.equal(stored.consent, true);
 		assert.equal(stored.consentText, "These people agreed to receive my emails");
 		assert.ok(stored.consentAt instanceof Date);
-		assert.equal(stored.userId.toString(), user.userId.toString());
+		assert.equal(stored.userId, user.userId);
 		assert.deepEqual({ rows: stored.rows, created: stored.created, existing: stored.existing }, { rows: 8, created: 2, existing: 1 });
 		assert.deepEqual(stored.dropped, { invalid: 1, typo: 0, trap: 0, role: 1, disposable: 1, duplicate: 3, suppressed: 1, noMail: 0 });
 
-		const cat = await m.Contact.findOne({ accountId: user.accountId, email: "cat@example.org" }).lean();
-		assert.equal(cat.importId.toString(), first.importId);
-		assert.equal(await m.Contact.exists({ accountId: user.accountId, email: "admin@example.org" }), null);
-		assert.equal(await m.Contact.exists({ accountId: user.accountId, email: "bounced@example.org" }), null);
+		const cat = await findContact("cat@example.org");
+		assert.equal(cat.importId, first.importId);
+		assert.equal(await findContact("admin@example.org"), null);
+		assert.equal(await findContact("bounced@example.org"), null);
 	});
 
 	test("an import id from another account or newsletter is refused", async () => {
@@ -170,7 +171,7 @@ describe("contact imports", () => {
 	});
 
 	test("the same checks run without the dashboard, for the API and MCP", async () => {
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await findAccount(user.accountId);
 		const result = await m.core.importContacts({
 			account,
 			newsletterId: user.newsletterId,
@@ -183,7 +184,7 @@ describe("contact imports", () => {
 		});
 		assert.equal(result.created, 1);
 		assert.equal(result.dropped.role, 1);
-		assert.equal((await m.ContactImport.findOne({ accountId: user.accountId, _id: result.importId }).lean()).source, "api");
+		assert.equal((await findImport(result.importId)).source, "api");
 	});
 
 	test("addresses on domains that can't receive email are left out; past unsubscribes there still go in", async () => {
@@ -201,9 +202,9 @@ describe("contact imports", () => {
 		);
 		assert.equal(result.created, 2);
 		assert.equal(result.dropped.noMail, 1);
-		assert.equal(await m.Contact.exists({ accountId: user.accountId, email: "gus@closed-shop.example" }), null);
-		assert.equal((await m.Contact.findOne({ accountId: user.accountId, email: "hal@closed-shop.example" }).lean()).status, "unsubscribed");
-		assert.equal((await m.ContactImport.findOne({ accountId: user.accountId, _id: result.importId }).lean()).dropped.noMail, 1);
+		assert.equal(await findContact("gus@closed-shop.example"), null);
+		assert.equal((await findContact("hal@closed-shop.example")).status, "unsubscribed");
+		assert.equal((await findImport(result.importId)).dropped.noMail, 1);
 	});
 
 	test("signups through the API, MCP and the archive's form refuse misspellings with a suggestion, traps and domains without email", async () => {
@@ -237,7 +238,7 @@ describe("contact imports", () => {
 		assert.deepEqual(formResult, { error: "Did you mean kim@yahoo.com?" });
 		assert.equal((await anonymous(() => m.archive.subscribe(null, form({ newsletter: "signup-checks", email: "kim@yahoo.com" })))).ok, true);
 
-		const emails = (await m.Contact.find({ accountId: user.accountId, newsletterId: newsletter }).lean()).map(({ email }) => email).sort();
+		const emails = (await getAll("SELECT email FROM contacts WHERE accountId = ? AND newsletterId = ?", [user.accountId, newsletter])).map(({ email }) => email).sort();
 		assert.deepEqual(emails, ["info@acme.com", "jane.doe@gmail.com", "kim@yahoo.com"]);
 	});
 });

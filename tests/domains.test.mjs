@@ -1,29 +1,32 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { activate, addVerifiedDomain, as, callApi, catchRedirect, form, jsonRequest, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { execute, getOne, getValue } from "../lib/db.js";
+import { activate, addVerifiedDomain, as, callApi, catchRedirect, findAccount, form, platformEmails, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { cnames } from "./stubs/dns-check.mjs";
-import { published } from "./stubs/qstash.mjs";
 import { calls, sent, state } from "./stubs/ses.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 
 // From addresses, SES tenants and domains, through the real actions with SES, DNS and Vercel in memory.
 let app;
 let m;
-let processed = 0;
 
+// The jobs Worker's queue consumer, on every job published so far.
 async function runJobs() {
-	while (processed < published.length) {
-		const { url, body } = published[processed++];
-		if (url.endsWith("/api/jobs/send-batch")) await m.sendBatchRoute.POST(jsonRequest(url, { method: "POST", body }));
+	while (queued.length > 0) {
+		const bodies = queued.splice(0);
+		await m.jobs.queue({ messages: bodies.map((body) => ({ body, attempts: 1, ack() {}, retry() {} })) });
 	}
 }
+
+const findNewsletter = (user) => getOne("SELECT * FROM newsletters WHERE accountId = ? ORDER BY createdAt, _id LIMIT 1", [user.accountId]);
+const findDomain = (user, domain) => getOne("SELECT * FROM domains WHERE accountId = ? AND domain = ?", [user.accountId, domain]);
 
 async function createNewsletter(user, slug, fields = {}) {
 	const url = await as(user, () =>
 		catchRedirect(m.newsletters.saveNewsletter(null, form({ name: slug, slug, postalAddress: "1 Main St, Paris", archiveEnabled: "on", ...fields })))
 	);
 	user.newsletterId = url.split("/").at(-1);
-	return m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
+	return getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
 }
 
 function saveFrom(user, slug, fromEmail) {
@@ -51,21 +54,16 @@ async function customer(email, slug) {
 }
 
 before(async () => {
-	app = await startTestApp({ QSTASH_CURRENT_SIGNING_KEY: "sig-current", QSTASH_NEXT_SIGNING_KEY: "sig-next" });
+	app = await startTestApp();
 	m = {
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		domains: await import("../app/(app)/domains/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
-		sendBatchRoute: await import("../app/api/jobs/send-batch/route.js"),
+		jobs: (await import("../worker/jobs.js")).default,
 		billing: await import("../lib/billing.js"),
 		hostRouting: await import("../lib/host-routing.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Domain: (await import("../models/Domain.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 });
 
@@ -80,12 +78,12 @@ describe("SES tenants", () => {
 			customer: "cus_tenant",
 			items: { data: [{ price: { lookup_key: "starter_month" }, current_period_start: 1_790_000_000, current_period_end: 1_792_600_000 }] },
 		};
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await findAccount(user.accountId);
 		await m.billing.applySubscription(account, subscription);
-		await m.billing.applySubscription(await m.Account.findById(user.accountId).lean(), subscription);
+		await m.billing.applySubscription(await findAccount(user.accountId), subscription);
 
 		const name = `mc-${user.accountId}`;
-		const { ses } = await m.Account.findById(user.accountId).lean();
+		const { ses } = await findAccount(user.accountId);
 		assert.equal(ses.tenantName, name);
 		assert.equal(ses.configurationSet, name);
 		assert.ok(ses.provisionedAt && ses.tenantArn.includes(`tenant/${name}/`));
@@ -97,13 +95,13 @@ describe("SES tenants", () => {
 	test("a failed setup doesn't stop the plan, and the first send finishes it", async () => {
 		const user = await signIn("tenant-retry@example.com");
 		state.failNext = { name: "createTenant", error: new Error("Throttled") };
-		await m.billing.applySubscription(await m.Account.findById(user.accountId).lean(), {
+		await m.billing.applySubscription(await findAccount(user.accountId), {
 			id: "sub_retry",
 			status: "active",
 			customer: "cus_retry",
 			items: { data: [{ price: { lookup_key: "starter_month" } }] },
 		});
-		const account = await m.Account.findById(user.accountId).lean();
+		const account = await findAccount(user.accountId);
 		assert.equal(account.subscriptionStatus, "active");
 		assert.equal(account.ses?.provisionedAt, undefined);
 
@@ -117,7 +115,7 @@ describe("SES tenants", () => {
 describe("from addresses", () => {
 	test("newsletters default to the shared address on their own subdomain, set up with its DNS records; replies go to the owner", async () => {
 		const user = await customer("shared@example.com", "shared-news");
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await findNewsletter(user);
 		assert.equal(newsletter.fromEmail, "hello@shared-news.mailcheapmail.com");
 		const subdomain = "shared-news.mailcheapmail.com";
 		assert.deepEqual(
@@ -148,14 +146,14 @@ describe("from addresses", () => {
 		assert.equal(email.configurationSet, `mc-${user.accountId}`);
 		assert.match(email.html, /https:\/\/shared-news\.mailcheapmail\.com\/c\//, "tracked links on the shared subdomain");
 		assert.match(email.headers["List-Unsubscribe"], /^<https:\/\/shared-news\.mailcheapmail\.com\/api\/unsubscribe\?token=/);
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender.verified, true, "SES found the records");
+		assert.equal((await findNewsletter(user)).sharedSender.verified, true, "SES found the records");
 	});
 
 	test("the shared address follows the slug, its old subdomain goes, and it can't be another newsletter's", async () => {
 		const user = await customer("slug-follow@example.com", "first-slug");
-		const first = (await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender;
+		const first = (await findNewsletter(user)).sharedSender;
 		assert.equal((await saveFrom(user, "second-slug", "hello@first-slug.mailcheapmail.com")).ok, true);
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await findNewsletter(user);
 		assert.equal(newsletter.fromEmail, "hello@second-slug.mailcheapmail.com");
 		assert.equal(newsletter.sharedSender.domain, "second-slug.mailcheapmail.com");
 		assert.equal(state.identities.has("first-slug.mailcheapmail.com"), false, "the old subdomain is free for anyone");
@@ -164,24 +162,24 @@ describe("from addresses", () => {
 		assert.ok(state.identities.has("second-slug.mailcheapmail.com"));
 
 		const other = await customer("slug-taker@example.com", "first-slug");
-		assert.equal((await m.Newsletter.findOne({ accountId: other.accountId }).lean()).sharedSender.domain, "first-slug.mailcheapmail.com");
+		assert.equal((await findNewsletter(other)).sharedSender.domain, "first-slug.mailcheapmail.com");
 		assert.ok(state.associations.get(`mc-${other.accountId}`).has("identity/first-slug.mailcheapmail.com"), "in the new owner's tenant");
 		assert.equal((await saveFrom(user, "second-slug", "hello@first-slug.mailcheapmail.com")).ok, true);
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).fromEmail, "hello@second-slug.mailcheapmail.com", "rewritten to its own");
+		assert.equal((await findNewsletter(user)).fromEmail, "hello@second-slug.mailcheapmail.com", "rewritten to its own");
 	});
 
 	test("before the provider's keys are in, the shared address waits without an alert; once they are, a failure alerts the admins", async () => {
 		const alerts = () => platformEmails.filter(({ subject }) => subject === "[MailCheap] Shared address not set up").length;
 		const before = { alerts: alerts(), calls: calls.length };
 		const user = await withEnv({ SES_ACCESS_KEY_ID: "", SES_SECRET_ACCESS_KEY: "" }, () => customer("no-provider@example.com", "no-provider"));
-		const waiting = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const waiting = await findNewsletter(user);
 		assert.equal(waiting.fromEmail, "hello@no-provider.mailcheapmail.com", "saved with its shared address");
-		assert.equal(waiting.sharedSender, undefined);
+		assert.equal(waiting.sharedSender, null);
 		assert.equal(calls.slice(before.calls).some(({ name }) => name === "createDomainIdentity"), false, "nothing tried at SES");
 		assert.equal(alerts(), before.alerts, "no alert");
 
 		assert.equal((await saveFrom(user, "no-provider", "hello@no-provider.mailcheapmail.com")).ok, true);
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).sharedSender.domain, "no-provider.mailcheapmail.com", "set up once the keys are in");
+		assert.equal((await findNewsletter(user)).sharedSender.domain, "no-provider.mailcheapmail.com", "set up once the keys are in");
 
 		state.failNext = { name: "createDomainIdentity", error: new Error("SES didn't answer") };
 		const error = console.error;
@@ -202,11 +200,11 @@ describe("from addresses", () => {
 		await as(user, () => m.contacts.importContacts({ newsletterId: user.newsletterId, consent: true, rows: [{ email: "reader@example.org", status: "active" }] }));
 		assert.deepEqual(await as(user, () => m.campaigns.sendCampaign(id, {})), { ok: true });
 		// Changed behind the dashboard's back: the send itself refuses it.
-		await m.Newsletter.updateOne({ accountId: user.accountId, _id: user.newsletterId }, { $set: { fromEmail: "ceo@bigbank.com" } });
+		await execute("UPDATE newsletters SET fromEmail = 'ceo@bigbank.com' WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
 		const before = sent.length;
 		await runJobs();
 		assert.equal(sent.length, before, "nothing went out");
-		const campaign = await m.Campaign.findOne({ accountId: user.accountId, _id: id }).lean();
+		const campaign = await getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [user.accountId, id]);
 		assert.equal(campaign.status, "paused");
 		assert.match(campaign.pauseReason, /bigbank.com isn't one of your domains/);
 	});
@@ -218,7 +216,7 @@ describe("own domains", () => {
 		const result = await as(user, () => m.domains.addDomainAction(null, form({ domain: "https://Owner-Mail.com/", archiveHost: "" })));
 		assert.deepEqual(result, { ok: true, domain: "owner-mail.com" });
 
-		const domain = await m.Domain.findOne({ accountId: user.accountId }).lean();
+		const domain = await findDomain(user, "owner-mail.com");
 		assert.equal(domain.mailFromDomain, "bounce.owner-mail.com");
 		assert.equal(domain.archiveHost, "news.owner-mail.com");
 		assert.equal(domain.verified, false);
@@ -238,7 +236,7 @@ describe("own domains", () => {
 		state.identities.get("owner-mail.com").verified = true;
 		cnames.set("news.owner-mail.com", ["cname.mailcheap.ai"]);
 		assert.deepEqual(await as(user, () => m.domains.checkDomainAction(String(domain._id))), { ok: true, verified: true, archiveHostVerified: true });
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).archiveHost, "news.owner-mail.com");
+		assert.equal((await findNewsletter(user)).archiveHost, "news.owner-mail.com");
 
 		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
 		const email = sent.at(-1);
@@ -252,7 +250,7 @@ describe("own domains", () => {
 		const user = await customer("paste@example.com", "paste-news");
 		const pasted = await as(user, () => m.domains.addDomainAction(null, form({ domain: "Jane Doe <jane@Pasted-Mail.com>", archiveHost: "" })));
 		assert.deepEqual(pasted, { ok: true, domain: "pasted-mail.com" });
-		assert.equal((await m.Domain.findOne({ accountId: user.accountId, domain: "pasted-mail.com" }).lean()).archiveHost, "news.pasted-mail.com");
+		assert.equal((await findDomain(user, "pasted-mail.com")).archiveHost, "news.pasted-mail.com");
 		assert.ok(state.identities.has("pasted-mail.com"), "added at the provider under the domain alone");
 
 		const { key } = await as(user, () => m.apiKeys.createApiKey(null, form({ name: "Agent", level: "full" })));
@@ -268,16 +266,16 @@ describe("own domains", () => {
 		const domain = await addVerifiedDomain(user, "switch-mail.com");
 		assert.deepEqual(await switchTo(user, domain, "not valid"), { error: "From email is invalid" });
 		assert.deepEqual(await switchTo(user, domain, " Jane "), { ok: true, fromEmail: "jane@switch-mail.com" });
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await findNewsletter(user);
 		assert.deepEqual([newsletter.fromEmail, newsletter.archiveHost], ["jane@switch-mail.com", "news.switch-mail.com"], "its archive and links move too");
 	});
 
 	test("a domain still being verified, or another account's, can't be switched to", async () => {
 		const user = await customer("switch-pending@example.com", "switch-pending");
 		await as(user, () => m.domains.addDomainAction(null, form({ domain: "pending-mail.com" })));
-		const pending = await m.Domain.findOne({ accountId: user.accountId, domain: "pending-mail.com" }).lean();
+		const pending = await findDomain(user, "pending-mail.com");
 		assert.deepEqual(await switchTo(user, pending, "hi"), { error: "pending-mail.com isn't verified yet" });
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).fromEmail, "hello@switch-pending.mailcheapmail.com");
+		assert.equal((await findNewsletter(user)).fromEmail, "hello@switch-pending.mailcheapmail.com");
 
 		const other = await customer("switch-other@example.com", "switch-other");
 		const theirs = await addVerifiedDomain(other, "their-mail.com");
@@ -291,8 +289,48 @@ describe("own domains", () => {
 		const result = await as(second, () => m.domains.addDomainAction(null, form({ domain: "taken.com" })));
 		assert.deepEqual(result, { error: "taken.com is used by another MailCheap account" });
 		assert.match((await saveFrom(second, "second-owner", "hi@taken.com")).error, /Add taken.com on the Domains page first/);
-		assert.equal(await m.Domain.countDocuments({ accountId: second.accountId }), 0);
+		assert.equal(await getValue("SELECT count(*) FROM domains WHERE accountId = ?", [second.accountId]), 0);
 		assert.deepEqual(await as(first, () => m.domains.addDomainAction(null, form({ domain: "taken.com" }))), { error: "taken.com is already added" });
+	});
+
+	test("an account without an SES tenant yet gets one with its first domain", async () => {
+		const user = await customer("first-domain@example.com", "first-domain");
+		await execute("UPDATE accounts SET ses = '{}' WHERE _id = ?", [user.accountId]);
+		const name = `mc-${user.accountId}`;
+		state.tenants.delete(name);
+		state.associations.delete(name);
+
+		const result = await as(user, () => m.domains.addDomainAction(null, form({ domain: "first-domain.com" })));
+		assert.deepEqual(result, { ok: true, domain: "first-domain.com" });
+		assert.ok(state.tenants.has(name));
+		assert.ok(state.associations.get(name).has("identity/first-domain.com"));
+		assert.ok(state.identities.has("first-domain.com"));
+	});
+
+	test("RATE_LIMITS sets how many domains an account adds an hour", async () => {
+		const user = await customer("limited-domains@example.com", "limited-domains");
+		const add = (domain) => as(user, () => m.domains.addDomainAction(null, form({ domain })));
+		await withEnv({ RATE_LIMITS: "add_domain=2" }, async () => {
+			assert.equal((await add("limited-one.com")).ok, true);
+			assert.equal((await add("limited-two.com")).ok, true);
+			assert.deepEqual(await add("limited-three.com"), { error: "You can add a domain 2 times an hour. Try again later." });
+		});
+		assert.equal((await add("limited-three.com")).ok, true, "back to the default 10");
+	});
+
+	test("an admin can add the parent domain of the app's host, a customer can't, and the host stays the app's", async () => {
+		const admin = await customer("admin@example.com", "admin-news");
+		const user = await customer("parent-domain@example.com", "parent-domain");
+		await withEnv({ APP_URL: "https://mail.parent-host.com" }, async () => {
+			const add = (who, fields) => as(who, () => m.domains.addDomainAction(null, form(fields)));
+			assert.deepEqual(await add(user, { domain: "parent-host.com" }), { error: "This domain can't be added" });
+			assert.deepEqual(await add(admin, { domain: "mail.parent-host.com" }), { error: "This domain can't be added" });
+			assert.deepEqual(await add(admin, { domain: "parent-host.com", archiveHost: "mail.parent-host.com" }), {
+				error: "This address is MailCheap's own, pick another subdomain",
+			});
+			assert.deepEqual(await add(admin, { domain: "parent-host.com" }), { ok: true, domain: "parent-host.com" });
+		});
+		assert.equal((await findDomain(admin, "parent-host.com")).archiveHost, "news.parent-host.com");
 	});
 
 	test("another account's domain can't be checked or removed", async () => {
@@ -301,7 +339,7 @@ describe("own domains", () => {
 		const domain = await addVerifiedDomain(owner, "guarded.com");
 		assert.deepEqual(await as(attacker, () => m.domains.checkDomainAction(String(domain._id))), { error: "Domain not found" });
 		assert.deepEqual(await as(attacker, () => m.domains.removeDomainAction(String(domain._id))), { error: "Domain not found" });
-		assert.ok(await m.Domain.exists({ accountId: owner.accountId, _id: domain._id }));
+		assert.ok(await getValue("SELECT 1 FROM domains WHERE accountId = ? AND _id = ?", [owner.accountId, domain._id]));
 	});
 
 	test("a domain with a campaign on its way can't be removed; afterwards it goes everywhere", async () => {
@@ -309,14 +347,14 @@ describe("own domains", () => {
 		const domain = await addVerifiedDomain(user, "leaving.com");
 		await saveFrom(user, "remove-news", "hi@leaving.com");
 		const id = await draft(user);
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: id }, { $set: { status: "scheduled", scheduledAt: new Date(Date.now() + 3_600_000) } });
+		await execute("UPDATE campaigns SET status = 'scheduled', scheduledAt = ? WHERE accountId = ? AND _id = ?", [Date.now() + 3_600_000, user.accountId, id]);
 		assert.match((await as(user, () => m.domains.removeDomainAction(String(domain._id)))).error, /A campaign is sending or scheduled from leaving.com/);
 
-		await m.Campaign.updateOne({ accountId: user.accountId, _id: id }, { $set: { status: "draft" }, $unset: { scheduledAt: 1 } });
+		await execute("UPDATE campaigns SET status = 'draft', scheduledAt = NULL WHERE accountId = ? AND _id = ?", [user.accountId, id]);
 		assert.deepEqual(await as(user, () => m.domains.removeDomainAction(String(domain._id))), { ok: true, removed: "leaving.com" });
 		assert.equal(state.identities.has("leaving.com"), false);
 		assert.equal(state.associations.get(`mc-${user.accountId}`).has("identity/leaving.com"), false);
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).archiveHost, undefined);
+		assert.equal((await findNewsletter(user)).archiveHost, null);
 		assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /leaving.com isn't one of your domains/);
 	});
 });
@@ -331,10 +369,9 @@ describe("hosts", () => {
 		assert.deepEqual(await resolve("Letters.Hosts.dev:443"), { isArchiveHost: true, slug: "hosts-news" });
 		assert.deepEqual(await resolve("unknown.example.net"), { isArchiveHost: true, slug: null });
 		assert.deepEqual(await resolve("localhost:3000"), { isArchiveHost: false, slug: null });
-		assert.deepEqual(await resolve("mailcheap-git-main.vercel.app"), { isArchiveHost: false, slug: null });
 
 		// Unsubscribe and tracking keep working after the plan ends.
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+		await execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 		assert.deepEqual(await resolve("hosts-news.mailcheapmail.com"), { isArchiveHost: true, slug: "hosts-news" });
 	});
 });

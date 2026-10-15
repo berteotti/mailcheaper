@@ -6,16 +6,12 @@ const stub = (name) => new URL(`../stubs/${name}`, import.meta.url).href;
 
 const STUBS = {
 	"server-only": stub("empty.mjs"),
+	"cloudflare:workers": new URL("../helpers/bindings.mjs", import.meta.url).href,
 	"next/headers": stub("next-headers.mjs"),
 	"next/headers.js": stub("next-headers.mjs"),
 	"next/cache": stub("next-cache.mjs"),
 	"next/navigation": stub("next-navigation.mjs"),
 	"next/server": stub("next-server.mjs"),
-	"@vercel/blob": stub("vercel-blob.mjs"),
-	"@aws-sdk/client-s3": stub("s3.mjs"),
-	"@aws-sdk/client-cloudfront": stub("cloudfront.mjs"),
-	"@upstash/qstash": stub("qstash.mjs"),
-	"@upstash/qstash/nextjs": stub("qstash-nextjs.mjs"),
 	"@better-auth/cimd/node": stub("cimd-node.mjs"),
 	"@/lib/ses": stub("ses.mjs"),
 	"@/lib/dns-check": stub("dns-check.mjs"),

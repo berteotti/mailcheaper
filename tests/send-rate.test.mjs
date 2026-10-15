@@ -2,13 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { LIMITS } from "../lib/config.js";
 import { waitForSendSlot } from "../lib/send-rate.js";
-
-const realFetch = globalThis.fetch;
+import { env } from "./helpers/bindings.mjs";
 
 afterEach(() => {
-	globalThis.fetch = realFetch;
-	delete process.env.UPSTASH_REDIS_REST_URL;
-	delete process.env.UPSTASH_REDIS_REST_TOKEN;
+	delete env.SES_PACER;
 });
 
 test("the SES rate comes from SEND_RATE_PER_SECOND, 14 by default", () => {
@@ -28,25 +25,35 @@ test("concurrent sends in one instance are spaced at the rate", async () => {
 	assert.ok(Date.now() - start >= 190, "4 gaps of 50 ms");
 });
 
-test("sends go on, spaced per instance, while Upstash is down", async () => {
-	process.env.SEND_RATE_PER_SECOND = "1000";
-	process.env.UPSTASH_REDIS_REST_URL = "https://redis.example.com";
-	process.env.UPSTASH_REDIS_REST_TOKEN = "token";
-	let calls = 0;
-	let callsAfterFirst;
-	globalThis.fetch = async () => {
-		calls++;
-		throw new Error("connect ECONNREFUSED");
+test("every instance takes its slots from one pacer per lane, named as the shared limiter was", async () => {
+	const names = [];
+	const intervals = [];
+	env.SES_PACER = {
+		idFromName: (name) => (names.push(name), name),
+		get: () => ({ reserve: async (intervalMs) => (intervals.push(intervalMs), 0) }),
 	};
+	await waitForSendSlot();
+	await waitForSendSlot({ name: "postshiba-rest", rate: 4 });
+	assert.deepEqual(names, ["mailcheap/ses-rate", "mailcheap/send-rate-postshiba-rest"]);
+	assert.deepEqual(intervals, [Math.ceil(1000 / LIMITS.sendRatePerSecond), 250]);
+});
+
+test("a queue longer than 30 seconds throws a Throttling error before anything is sent", async () => {
+	env.SES_PACER = { idFromName: (name) => name, get: () => ({ reserve: async () => 31_000 }) };
+	await assert.rejects(waitForSendSlot(), { name: "Throttling" });
+});
+
+test("sends go on, spaced per instance, while the pacer is unreachable", async () => {
+	process.env.SEND_RATE_PER_SECOND = "1000";
+	let calls = 0;
+	env.SES_PACER = { idFromName: (name) => name, get: () => ({ reserve: async () => { calls++; throw new Error("Durable Object reset"); } }) };
 	const originalError = console.error;
 	console.error = () => {};
 	try {
 		await waitForSendSlot();
-		callsAfterFirst = calls;
 		await waitForSendSlot();
 	} finally {
 		console.error = originalError;
 	}
-	assert.ok(callsAfterFirst > 0, "asked Upstash first");
-	assert.equal(calls, callsAfterFirst, "then stopped asking for a minute");
+	assert.equal(calls, 2, "asked the pacer each time, and fell back to local spacing");
 });

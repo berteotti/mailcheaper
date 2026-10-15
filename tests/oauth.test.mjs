@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { after, before, describe, test } from "node:test";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
-import mongoose from "mongoose";
+import { execute, getOne, getValue } from "../lib/db.js";
 import { activate, anonymous, as, catchRedirect, form, platformEmails, startTestApp } from "./helpers/app.mjs";
 import { metadataDocuments } from "./stubs/cimd-node.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
@@ -131,9 +131,9 @@ async function customer(email, { slug } = {}) {
 	const user = { email, jar: new Map(), ip: `198.51.100.${++visitor}` };
 	await as(user, () => m.signin.sendSigninCode(null, form({ email })));
 	assert.equal(await as(user, () => catchRedirect(m.signin.verifySigninCode(null, form({ email, code: signInCode(email), next: "/" })))), "/");
-	const stored = await mongoose.connection.db.collection("users").findOne({ email });
-	user.userId = stored._id;
-	user.accountId = (await m.Account.findOne({ ownerId: stored._id }).lean())._id;
+	const stored = await getOne("SELECT id FROM users WHERE email = ?", [email]);
+	user.userId = stored.id;
+	user.accountId = (await getOne("SELECT _id FROM accounts WHERE ownerId = ?", [stored.id]))._id;
 	await activate(user);
 	if (slug) {
 		await as(user, () => catchRedirect(m.newsletters.saveNewsletter(null, form({ name: `${slug} news`, slug, postalAddress: "1 Main St, Paris" }))));
@@ -246,14 +246,14 @@ async function postToken(params) {
 async function register(metadata, ip = `203.0.113.${++registrant}`) {
 	const response = await appFetch(REGISTER_URL, {
 		method: "POST",
-		headers: { "content-type": "application/json", "x-forwarded-for": ip },
+		headers: { "content-type": "application/json", "cf-connecting-ip": ip },
 		body: JSON.stringify(metadata),
 	});
 	return { status: response.status, body: await response.json() };
 }
 
 function countClients() {
-	return mongoose.connection.db.collection("oauthClient").countDocuments();
+	return getValue("SELECT count(*) FROM oauthClient");
 }
 
 function pkce() {
@@ -300,10 +300,6 @@ before(async () => {
 		accounts: await import("../lib/accounts.js"),
 		blocks: await import("../lib/account-blocks.js"),
 		registry: await import("../lib/actions/registry.js"),
-		Account: (await import("../models/Account.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 	metadataDocuments.set(AGENT.clientId, documentFor(AGENT));
 	users.owner = await customer("oauth-owner@example.com", { slug: "oauth-owner" });
@@ -396,7 +392,7 @@ describe("connecting with the official MCP client", () => {
 		assert.deepEqual(newsletters.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-owner"]);
 		const draft = await client.callTool({ name: "create_campaign", arguments: { subject: "From ChatGPT", content: "# Hi" } });
 		assert.equal(draft.structuredContent.source, "api");
-		assert.ok(await m.Campaign.exists({ accountId: users.owner.accountId, subject: "From ChatGPT" }));
+		assert.ok(await getOne("SELECT _id FROM campaigns WHERE accountId = ? AND subject = ?", [users.owner.accountId, "From ChatGPT"]));
 		await client.close();
 	});
 
@@ -641,8 +637,8 @@ describe("registering, as Grok Bot does", () => {
 		assert.equal(body.token_endpoint_auth_method, "none");
 		assert.equal(body.client_secret, undefined);
 		assert.deepEqual(body.resources, [MCP_URL]);
-		const stored = await mongoose.connection.db.collection("oauthClient").findOne({ clientId: body.client_id });
-		assert.deepEqual(stored.redirectUris, GROK_BOT.redirect_uris);
+		const stored = await getOne("SELECT * FROM oauthClient WHERE clientId = ?", [body.client_id]);
+		assert.deepEqual(JSON.parse(stored.redirectUris), GROK_BOT.redirect_uris);
 		assert.equal(stored.name, "Grok Bot");
 	});
 
@@ -793,7 +789,7 @@ describe("tokens", () => {
 	test("each token only reaches its own user's account", async () => {
 		const ownerApp = await connectApp(users.owner);
 		const strangerApp = await connectApp(users.stranger);
-		const ownCampaign = await m.Campaign.findOne({ accountId: users.owner.accountId, subject: "From ChatGPT" }).lean();
+		const ownCampaign = await getOne("SELECT _id FROM campaigns WHERE accountId = ? AND subject = ?", [users.owner.accountId, "From ChatGPT"]);
 
 		const theirs = await strangerApp.callTool({ name: "get_campaign", arguments: { id: String(ownCampaign._id) } });
 		assert.equal(JSON.parse(theirs.content[0].text).error.code, "not_found");
@@ -822,7 +818,7 @@ describe("tokens", () => {
 		assert.equal(toolError(await callTool(token, "add_contact", { email: "new-reader@example.org" })).code, "account_blocked");
 		assert.equal((await callTool(token, "list_contacts")).structuredContent.contacts.length, 1, "reads still work");
 
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { status: "active", subscriptionStatus: "canceled" } });
+		await execute("UPDATE accounts SET status = 'active', subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 		const canceledByKey = toolError(await callTool(key, "list_contacts"));
 		assert.equal(canceledByKey.code, "subscription_required");
 		assert.deepEqual(toolError(await callTool(token, "list_contacts")), canceledByKey);
@@ -834,7 +830,7 @@ describe("tokens", () => {
 		await (await connectApp(user, provider)).close();
 		const token = provider.saved.tokens.access_token;
 		const { key } = await as(user, () => m.apiKeys.createApiKey(null, form({ name: "Site", level: "signups" })));
-		const newsletterId = String((await m.Newsletter.findOne({ accountId: user.accountId }).lean())._id);
+		const newsletterId = (await getOne("SELECT _id FROM newsletters WHERE accountId = ?", [user.accountId]))._id;
 		const byHand = (email) => as(user, () => m.contacts.addContact(null, form({ newsletterId, email, consent: "on" })));
 
 		for (let index = 0; index < 598; index++) assert.equal((await byHand(`hand${index}@example.org`)).status, "active", String(index));
@@ -846,7 +842,7 @@ describe("tokens", () => {
 		assert.deepEqual(toolError(await callTool(key, "add_contact", { email: "site-again@example.org" })), refused);
 		assert.deepEqual(await byHand("hand-again@example.org"), { error: "You can add 600 contacts an hour. Try again later." });
 		await flushAfter();
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 600);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 600);
 		assert.equal(platformEmails.filter(({ to, subject }) => to.includes(user.email) && subject === "[MailCheap] Signups paused").length, 1);
 	});
 });

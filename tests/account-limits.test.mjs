@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { getOne } from "../lib/db.js";
 import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 import { state } from "./stubs/ses.mjs";
@@ -18,7 +19,6 @@ before(async () => {
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		mcpRoute: await import("../app/mcp/route.js"),
-		Newsletter: (await import("../models/Newsletter.js")).default,
 	};
 });
 
@@ -136,7 +136,7 @@ describe("slugs", () => {
 		assert.deepEqual([refused.status, refused.body.error], [429, { code: "rate_limited", message: limited }]);
 		assert.deepEqual(await callTool(user.key, "update_newsletter", { id: user.newsletterId, slug: "slug-e" }), { error: { code: "rate_limited", message: limited } });
 
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId, _id: user.newsletterId }).lean();
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [user.accountId, user.newsletterId]);
 		assert.deepEqual([newsletter.slug, newsletter.fromEmail, newsletter.sharedSender.domain], ["slug-d", "hello@slug-d.mailcheapmail.com", "slug-d.mailcheapmail.com"]);
 		for (const slug of ["slug-a", "slug-b", "slug-c"]) {
 			assert.equal(state.identities.has(`${slug}.mailcheapmail.com`), false, slug);

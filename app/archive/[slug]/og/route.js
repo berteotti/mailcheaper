@@ -1,18 +1,16 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { ImageResponse } from "next/og";
+import geistRegularUrl from "@/assets/fonts/Geist-Regular.ttf?inline";
+import geistSemiBoldUrl from "@/assets/fonts/Geist-SemiBold.ttf?inline";
 import { countReaders, getArchiveIssue, getArchiveNewsletter } from "@/lib/archive-data";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { getIssueDate } from "@/lib/archive-issues";
 import { SHARE_IMAGE_SIZE } from "@/lib/archive-seo";
-import { getAppUrl } from "@/lib/config";
 import { formatDate, formatNumber } from "@/lib/format";
 import { readLogo } from "@/lib/og-image";
 
-const [geistRegular, geistSemiBold] = await Promise.all([
-	readFile(join(process.cwd(), "assets/fonts/Geist-Regular.ttf")),
-	readFile(join(process.cwd(), "assets/fonts/Geist-SemiBold.ttf")),
-]);
+// Bundled into the Worker as data URLs: a deployed Worker has no project checkout to read files from.
+const fromDataUrl = (url) => Buffer.from(url.slice(url.indexOf(",") + 1), "base64");
+const [geistRegular, geistSemiBold] = [fromDataUrl(geistRegularUrl), fromDataUrl(geistSemiBoldUrl)];
 const FONTS = [
 	{ name: "Geist", data: geistRegular, weight: 400, style: "normal" },
 	{ name: "Geist", data: geistSemiBold, weight: 600, style: "normal" },

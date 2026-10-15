@@ -1,14 +1,25 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { getCleanupSettings } from "../lib/cleanup.js";
-import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
-import { flushAfter } from "./stubs/next-server.mjs";
+import { execute, getAll, getOne, getValue } from "../lib/db.js";
+import { activate, anonymous, as, callApi, catchRedirect, findAccount, form, queued, signIn, startTestApp } from "./helpers/app.mjs";
+import { flushAfter as flushResponses } from "./stubs/next-server.mjs";
 
 // A new account names its newsletter at /welcome, tries the dashboard without a plan, and meets the paywall
 // where something costs: sending, imports, domains and API keys. The REST API and MCP need a plan for everything.
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]);
 let app;
 let m;
+let processed = 0;
+
+// Work after the response, then every job it published, through the queue consumer as the Jobs Worker runs them.
+async function flushAfter() {
+	await flushResponses();
+	while (processed < queued.length) {
+		const body = queued[processed++];
+		await m.jobs.queue({ messages: [{ body, attempts: 1, ack() {}, retry() {} }] });
+	}
+}
 
 before(async () => {
 	app = await startTestApp();
@@ -23,10 +34,7 @@ before(async () => {
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		uploadsRoute: await import("../app/api/uploads/route.js"),
 		mcpRoute: await import("../app/mcp/route.js"),
-		Account: (await import("../models/Account.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Message: (await import("../models/Message.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
+		jobs: (await import("../worker/jobs.js")).default,
 	};
 });
 
@@ -52,7 +60,7 @@ async function callTool(key, name, args) {
 }
 
 function loadAccount(user) {
-	return m.Account.findById(user.accountId).lean();
+	return findAccount(user.accountId);
 }
 
 describe("/welcome", () => {
@@ -62,7 +70,7 @@ describe("/welcome", () => {
 
 		const answers = { name: "Field notes", description: "One idea a week.", fromName: "Jane", listSize: "growth", listSource: "Substack" };
 		assert.equal(await welcome(user, answers), "/");
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		assert.deepEqual(
 			[newsletter.name, newsletter.slug, newsletter.description, newsletter.fromName, newsletter.fromEmail],
 			["Field notes", "field-notes", "One idea a week.", "Jane", "hello@field-notes.mailcheapmail.com"]
@@ -75,13 +83,13 @@ describe("/welcome", () => {
 		assert.equal(await m.onboarding.needsOnboarding(account), false);
 
 		assert.equal(await welcome(user, { name: "Again" }), "/", "sent twice, it only finishes");
-		assert.equal(await m.Newsletter.countDocuments({ accountId: user.accountId }), 1);
+		assert.equal(await getValue("SELECT count(*) FROM newsletters WHERE accountId = ?", [user.accountId]), 1);
 	});
 
 	test("a name another newsletter has gets a numbered slug; no list starts on the smallest plan", async () => {
 		const user = await signIn("second@example.com");
 		assert.equal(await welcome(user, { name: "Field notes", listSize: "none", listSource: "Substack" }), "/");
-		assert.equal((await m.Newsletter.findOne({ accountId: user.accountId }).lean()).slug, "field-notes-2");
+		assert.equal((await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId])).slug, "field-notes-2");
 		const account = await loadAccount(user);
 		assert.equal(account.onboarding.listSource, undefined, "no list, no source");
 		assert.equal(m.onboarding.getRecommendedPlanId(account), "starter");
@@ -107,7 +115,7 @@ describe("without a plan", () => {
 	test("the dashboard sets up and writes; sending, imports, domains and API keys answer subscription_required", async () => {
 		const user = await signIn("trying@example.com");
 		await welcome(user, { name: "Trying" });
-		const newsletter = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const newsletter = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		const saved = await as(user, () => m.newsletters.saveNewsletter(null, form({ id: String(newsletter._id), name: "Trying out", slug: "trying" })));
 		assert.equal(saved.ok, true);
 		const url = await as(user, () => catchRedirect(m.campaigns.createCampaign(String(newsletter._id))));
@@ -159,7 +167,7 @@ describe("without a plan", () => {
 	test("the dashboard adds 5 contacts a day by hand, active at once with the signup checks and no email; imports stay paid", async () => {
 		const user = await signIn("contacts-trial@example.com");
 		await welcome(user, { name: "Contacts trial" });
-		const newsletterId = String((await m.Newsletter.findOne({ accountId: user.accountId }).lean())._id);
+		const newsletterId = String((await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]))._id);
 		const add = (email, consent = "on") => as(user, () => m.contacts.addContact(null, form({ newsletterId, email, ...(consent && { consent }) })));
 
 		assert.deepEqual(await add("me@example.org", null), { error: "Check that this person agreed to get your emails" }, "a refusal doesn't count");
@@ -169,8 +177,8 @@ describe("without a plan", () => {
 		for (const email of ["a@example.org", "b@example.org", "c@example.org"]) assert.equal((await add(email)).status, "active", email);
 		assert.deepEqual(await add("d@example.org"), { error: "Pick a plan to add more contacts", code: "subscription_required" });
 		await flushAfter();
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId }), 0, "sending stays paid: no email");
-		const contacts = await m.Contact.find({ accountId: user.accountId }).sort({ email: 1 }).lean();
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ?", [user.accountId]), 0, "sending stays paid: no email");
+		const contacts = await getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [user.accountId]);
 		assert.deepEqual(
 			contacts.map(({ email, source }) => [email, source]),
 			["a", "b", "c", "me"].map((name) => [`${name}@example.org`, "dashboard"])
@@ -181,13 +189,13 @@ describe("without a plan", () => {
 		await activate(user);
 		assert.equal((await add("d@example.org")).status, "active", "a plan lifts the cap");
 		await flushAfter();
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId }), 0, "with a plan, still no confirmation email");
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ?", [user.accountId]), 0, "with a plan, still no confirmation email");
 	});
 
 	test("a contact added by hand gets the welcome email once the account has a plan, never before", async () => {
 		const user = await signIn("welcome-trial@example.com");
 		await welcome(user, { name: "Welcome trial" });
-		const { _id, name, slug } = await m.Newsletter.findOne({ accountId: user.accountId }).lean();
+		const { _id, name, slug } = await getOne("SELECT * FROM newsletters WHERE accountId = ?", [user.accountId]);
 		const newsletterId = String(_id);
 		const settings = { id: newsletterId, name, slug, postalAddress: "1 Main St, Paris", welcomeEnabled: "on", welcomeSubject: "Welcome", welcomeMarkdown: "Thanks." };
 		assert.equal((await as(user, () => m.newsletters.saveNewsletter(null, form(settings)))).ok, true, "signups don't confirm, so the welcome email is on");
@@ -195,14 +203,14 @@ describe("without a plan", () => {
 
 		assert.equal((await add("early@example.org")).status, "active");
 		await flushAfter();
-		assert.equal(await m.Message.countDocuments({ accountId: user.accountId }), 0, "a trial account sends nothing");
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ?", [user.accountId]), 0, "a trial account sends nothing");
 
 		// What Stripe's webhook does when the plan starts: the shared address gets set up at the provider.
 		await activate(user);
 		await m.sharedSender.syncSharedSenders(await loadAccount(user));
 		assert.equal((await add("paid@example.org")).status, "active");
 		await flushAfter();
-		const messages = await m.Message.find({ accountId: user.accountId }).lean();
+		const messages = await getAll("SELECT * FROM messages WHERE accountId = ?", [user.accountId]);
 		assert.deepEqual(messages.map(({ kind, email, status }) => [kind, email, status]), [["welcome", "paid@example.org", "sent"]]);
 	});
 
@@ -211,7 +219,7 @@ describe("without a plan", () => {
 		await welcome(user, { name: "API trial" });
 		await activate(user);
 		const { key } = await as(user, () => m.apiKeys.createApiKey(null, form({ name: "Site" })));
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+		await execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 		const response = await callApi("GET", "/api/v1/newsletters", { key });
 		assert.equal(response.status, 402);
 		assert.equal(response.body.error.code, "subscription_required");
@@ -222,6 +230,6 @@ describe("without a plan", () => {
 		const tool = await callTool(key, "add_contact", { email: "late@example.org" });
 		assert.equal(tool.isError, true);
 		assert.equal(JSON.parse(tool.content[0].text).error.code, "subscription_required");
-		assert.equal(await m.Contact.countDocuments({ accountId: user.accountId }), 0);
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [user.accountId]), 0);
 	});
 });

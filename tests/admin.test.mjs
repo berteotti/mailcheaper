@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
-import { activate, as, catchNotFound, form, signIn, startTestApp } from "./helpers/app.mjs";
+import { activate, as, catchNotFound, findAccount, form, signIn, startTestApp } from "./helpers/app.mjs";
 
 let app;
 let m;
@@ -14,7 +14,6 @@ before(async () => {
 		accounts: await import("../lib/accounts.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
-		Account: (await import("../models/Account.js")).default,
 	};
 	admin = await signIn("ops@example.com");
 	customer = await signIn("customer@example.com");
@@ -31,7 +30,7 @@ test("admin actions answer 404 to anyone outside ADMIN_EMAILS, and change nothin
 		await as(customer, () => catchNotFound(m.actions.saveLimits(null, form({ accountId: id, emailsPerMonth: "999999" })))),
 		true
 	);
-	const untouched = await m.Account.findById(customer.accountId).lean();
+	const untouched = await findAccount(customer.accountId);
 	assert.equal(untouched.status, "active");
 	assert.equal(untouched.limitOverrides?.emailsPerMonth, undefined);
 });
@@ -39,7 +38,7 @@ test("admin actions answer 404 to anyone outside ADMIN_EMAILS, and change nothin
 test("blocking and unblocking an account", async () => {
 	const id = String(customer.accountId);
 	assert.deepEqual(await as(admin, () => m.actions.blockAccountAction(id, "Complaints spike")), { ok: true });
-	let account = await m.Account.findById(id).lean();
+	let account = await findAccount(id);
 	assert.equal(account.status, "paused");
 	assert.equal(account.pauseReason, "Complaints spike");
 	assert.equal(account.pausedBy, "admin");
@@ -47,11 +46,11 @@ test("blocking and unblocking an account", async () => {
 	assert.deepEqual(await as(admin, () => m.actions.blockAccountAction(id, "again")), { error: "Already blocked" });
 
 	assert.deepEqual(await as(admin, () => m.actions.unblockAccountAction(id)), { ok: true });
-	account = await m.Account.findById(id).lean();
+	account = await findAccount(id);
 	assert.equal(account.status, "active");
-	assert.equal(account.pausedAt, undefined);
-	assert.equal(account.pauseReason, undefined);
-	assert.equal(account.pausedBy, undefined);
+	assert.equal(account.pausedAt, null);
+	assert.equal(account.pauseReason, null);
+	assert.equal(account.pausedBy, null);
 	assert.deepEqual(await as(admin, () => m.actions.unblockAccountAction(id)), { error: "Not blocked" });
 });
 
@@ -59,7 +58,7 @@ test("limit overrides replace the plan's numbers, and empty fields bring the pla
 	const id = String(customer.accountId);
 	const saved = await as(admin, () => m.actions.saveLimits(null, form({ accountId: id, emailsPerMonth: "150,000", subscribers: "" })));
 	assert.equal(saved.ok, true);
-	let account = await m.Account.findById(id).lean();
+	let account = await findAccount(id);
 	assert.equal(account.limitOverrides.emailsPerMonth, 150_000);
 	assert.equal(account.limitOverrides.subscribers, undefined);
 
@@ -71,7 +70,7 @@ test("limit overrides replace the plan's numbers, and empty fields bring the pla
 	});
 
 	await as(admin, () => m.actions.saveLimits(null, form({ accountId: id, emailsPerMonth: "", subscribers: "" })));
-	account = await m.Account.findById(id).lean();
+	account = await findAccount(id);
 	assert.equal(account.limitOverrides?.emailsPerMonth, undefined);
 });
 

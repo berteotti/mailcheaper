@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildAudienceQuery, selectAudience } from "../lib/audience.js";
+import { accountId, database, seedAccount, seedNewsletter } from "./helpers/d1.mjs";
+const { buildAudiencePage, selectAudience } = await import("../lib/audience.js");
 
-const accountId = "64f1a2b3c4d5e6f7a8b9c0d1";
 const newsletterId = "74f1a2b3c4d5e6f7a8b9c0d2";
 
 function contact(id, fields = {}) {
@@ -76,29 +76,53 @@ test("contacts with equal engagement keep a stable order", () => {
 	);
 });
 
-test("the Mongo query selects the same audience in the same order", () => {
-	const query = buildAudienceQuery({ accountId, newsletterId, suppressedEmails, audienceLimit: 500 });
-	assert.deepEqual(query.filter, {
-		accountId,
-		newsletterId,
-		status: "active",
-		email: { $nin: suppressedEmails },
+function seedContacts(t) {
+	const db = database(t);
+	seedNewsletter(db, { _id: newsletterId });
+	const insert = db.sqlite.prepare(`INSERT INTO contacts (_id, accountId, newsletterId, email, status, subscribedAt, lastOpenAt, lastClickAt,
+		imported, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+	// Same creation time for some, so the id has to break ties the way it does in selectAudience.
+	contacts.forEach((row, index) => {
+		const created = row.createdAt.getTime();
+		insert.run(index.toString(16).padStart(24, "0"), accountId, newsletterId, row.email, row.status, created,
+			row.lastOpenAt?.getTime() ?? null, row.lastClickAt?.getTime() ?? null, JSON.stringify(row.imported ?? {}), created, created);
 	});
-	assert.deepEqual(Object.entries(query.sort), [
-		["lastClickAt", -1],
-		["lastOpenAt", -1],
-		["imported.clickRate", -1],
-		["imported.openRate", -1],
-		["createdAt", 1],
-		["_id", 1],
-	]);
-	assert.equal(query.limit, 500);
+	db.sqlite.prepare("INSERT INTO suppressions (_id, accountId, email, reason, createdAt, updatedAt) VALUES (?, ?, ?, 'manual', 0, 0)")
+		.run("f".repeat(24), accountId, suppressedEmails[0]);
+	return db;
+}
+
+async function readPages(db, size) {
+	const emails = [];
+	let after = null;
+	for (;;) {
+		const { sql, params } = buildAudiencePage({ accountId, newsletterId, after, limit: size });
+		const { results } = await db.prepare(sql).bind(...params).all();
+		emails.push(...results.map(({ email }) => email));
+		if (results.length < size) return emails;
+		after = results.at(-1);
+	}
+}
+
+test("the D1 query selects the same audience in the same order, page after page", async (t) => {
+	const db = seedContacts(t);
+	const expected = selectAudience(contacts, { suppressedEmails }).map(({ email }) => email);
+	for (const size of [1, 2, 3, 100]) assert.deepEqual(await readPages(db, size), expected, `pages of ${size}`);
 });
 
-test("the Mongo query skips empty suppression lists and invalid limits", () => {
-	assert.deepEqual(buildAudienceQuery({ accountId, newsletterId }).filter, { accountId, newsletterId, status: "active" });
-	for (const audienceLimit of [undefined, null, 0, -1, 2.5, "abc"]) {
-		assert.equal(buildAudienceQuery({ accountId, newsletterId, audienceLimit }).limit, null);
-	}
-	assert.equal(buildAudienceQuery({ accountId, newsletterId, audienceLimit: "250" }).limit, 250);
+test("the D1 query takes the top of the audience up to a limit", async (t) => {
+	const db = seedContacts(t);
+	const { sql, params } = buildAudiencePage({ accountId, newsletterId, limit: 3 });
+	const { results } = await db.prepare(sql).bind(...params).all();
+	assert.deepEqual(results.map(({ email }) => email), selectAudience(contacts, { suppressedEmails, audienceLimit: 3 }).map(({ email }) => email));
+});
+
+test("only the account's own suppressions leave its contacts out", async (t) => {
+	const db = seedContacts(t);
+	const other = seedAccount(db, { _id: "74f1a2b3c4d5e6f7a8b9c0ff" })._id;
+	db.sqlite.prepare("INSERT INTO suppressions (_id, accountId, email, reason, createdAt, updatedAt) VALUES (?, ?, ?, 'bounce', 0, 0)")
+		.run("e".repeat(24), other, contacts[0].email);
+	assert.deepEqual(await readPages(db, 100), selectAudience(contacts, { suppressedEmails }).map(({ email }) => email));
+	const { sql, params } = buildAudiencePage({ accountId: other, newsletterId, limit: 100 });
+	assert.deepEqual((await db.prepare(sql).bind(...params).all()).results, [], "another account reads none of them");
 });

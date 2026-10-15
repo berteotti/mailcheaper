@@ -5,7 +5,6 @@ import { after } from "next/server";
 import { sendAlert } from "@/lib/alerts";
 import { isSendingEnabled } from "@/lib/config";
 import { getSignupProblem, upsertContact } from "@/lib/contacts";
-import { connectDb } from "@/lib/db";
 import { getInbox } from "@/lib/inbox-links";
 import { findSignupNewsletter } from "@/lib/public-newsletters";
 import { getClientIp, isRateLimited } from "@/lib/rate-limit";
@@ -30,7 +29,6 @@ export async function subscribe(_state, formData) {
 	const emailProblem = await getSignupProblem(email);
 	if (emailProblem) return { error: emailProblem };
 
-	await connectDb();
 	const newsletter = await findSignupNewsletter({
 		slug: String(formData.get("newsletter") ?? ""),
 		archiveEnabled: true,

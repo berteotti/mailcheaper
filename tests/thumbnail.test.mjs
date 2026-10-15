@@ -3,20 +3,13 @@ import { test } from "node:test";
 import { formatRate } from "../lib/format.js";
 import { firstImageUrl, isOptimizableImage } from "../lib/thumbnail.js";
 
-test("only local and Blob pictures go through Next's resizer", () => {
+test("only bundled local pictures go through the image route; uploads load as they are", () => {
 	assert.equal(isOptimizableImage("/authors/jane.jpg"), true);
-	assert.equal(isOptimizableImage("https://abc123.public.blob.vercel-storage.com/uploads/a-x.webp"), true);
+	assert.equal(isOptimizableImage("https://assets.example.com/images/a-0123456789abcdef01234567.webp"), false);
+	assert.equal(isOptimizableImage("//evil.test/a.png"), false);
 	assert.equal(isOptimizableImage("https://images.example.com/uploads/a.png"), false);
 	assert.equal(isOptimizableImage("https://mailcheap.example.com/archive/weekly/og?p=x"), false);
 	assert.equal(isOptimizableImage("https://evil.test/x.public.blob.vercel-storage.com/a.png"), false);
-});
-
-test("pictures on the images CDN go through it too, once IMAGES_CDN_URL names it", () => {
-	const env = { IMAGES_CDN_URL: "https://cdn.example.com" };
-	assert.equal(isOptimizableImage("https://cdn.example.com/accounts/a/images/cover-0123456789abcdef.png", env), true);
-	assert.equal(isOptimizableImage("https://cdn.example.com.evil.test/accounts/a.png", env), false);
-	assert.equal(isOptimizableImage("https://images.example.com/accounts/a.png", env), false);
-	assert.equal(isOptimizableImage("https://cdn.example.com/accounts/a.png", {}), false);
 });
 
 test("the first real image of an issue becomes its thumbnail", () => {

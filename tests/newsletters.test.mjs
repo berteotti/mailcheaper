@@ -78,10 +78,7 @@ before(async () => {
 		getStarted: await import("../lib/get-started.js"),
 		usage: await import("../lib/usage.js"),
 		accounts: await import("../lib/accounts.js"),
-		Account: (await import("../models/Account.js")).default,
-		Contact: (await import("../models/Contact.js")).default,
-		Campaign: (await import("../models/Campaign.js")).default,
-		Newsletter: (await import("../models/Newsletter.js")).default,
+		db: await import("../lib/db.js"),
 	};
 
 	jane = await signIn("jane@example.com");
@@ -180,36 +177,36 @@ describe("each newsletter's pages only show its own", () => {
 
 	test("new drafts and imports go to the newsletter they name, after it's checked against the account", async () => {
 		const id = await draft(jane, beta, "Beta second");
-		assert.equal(String((await m.Campaign.findOne({ accountId: jane.accountId, _id: id }).lean()).newsletterId), beta);
+		assert.equal(String((await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [jane.accountId, id])).newsletterId), beta);
 		assert.equal((await importReaders(jane, beta, ["b2@example.org"])).created, 1);
-		assert.equal(await m.Contact.countDocuments({ accountId: jane.accountId, newsletterId: alpha, email: "b2@example.org" }), 0);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND newsletterId = ? AND email = ?", [jane.accountId, alpha, "b2@example.org"]), 0);
 
-		const before = await m.Contact.countDocuments({ accountId: stranger.accountId });
+		const before = await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [stranger.accountId]);
 		assert.deepEqual(await as(jane, () => m.campaigns.createCampaign(strangerNewsletter)), { error: "Newsletter not found" });
 		assert.deepEqual(await importReaders(jane, strangerNewsletter, ["spam@example.net"]), { error: "Newsletter not found" });
 		assert.deepEqual(await as(jane, () => m.contacts.exportContacts({ newsletterId: strangerNewsletter })), { error: "Newsletter not found" });
-		assert.equal(await m.Contact.countDocuments({ accountId: stranger.accountId }), before);
-		assert.equal(await m.Campaign.countDocuments({ accountId: jane.accountId, newsletterId: strangerNewsletter }), 0);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ?", [stranger.accountId]), before);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM campaigns WHERE accountId = ? AND newsletterId = ?", [jane.accountId, strangerNewsletter]), 0);
 	});
 
 	test("Get started opens the open newsletter's draft", async () => {
-		const account = await m.Account.findById(jane.accountId).lean();
-		const alphaDraft = (await m.Campaign.findOne({ accountId: jane.accountId, newsletterId: alpha, status: "draft" }).lean())._id;
+		const account = await m.db.getOne("SELECT * FROM accounts WHERE _id = ?", [jane.accountId]);
+		const alphaDraft = (await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND newsletterId = ? AND status = 'draft'", [jane.accountId, alpha]))._id;
 		assert.equal((await m.getStarted.getGetStartedSteps(account, alpha)).draftId, String(alphaDraft));
 		const betaDraft = (await m.getStarted.getGetStartedSteps(account, beta)).draftId;
-		assert.equal(String((await m.Campaign.findOne({ accountId: jane.accountId, _id: betaDraft }).lean()).newsletterId), beta);
+		assert.equal(String((await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [jane.accountId, betaDraft])).newsletterId), beta);
 	});
 });
 
 describe("the plan is the account's", () => {
 	test("subscribers count every newsletter, and a send checks them all", async () => {
-		const account = await m.Account.findById(jane.accountId).lean();
-		const active = await m.Contact.countDocuments({ accountId: jane.accountId, status: "active" });
+		const account = await m.db.getOne("SELECT * FROM accounts WHERE _id = ?", [jane.accountId]);
+		const active = await m.db.getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND status = 'active'", [jane.accountId]);
 		assert.equal(active, 6);
 		assert.equal((await m.usage.getUsage(account)).subscribers, active);
 
 		await m.accounts.setLimitOverrides(jane.accountId, { emailsPerMonth: 1000, subscribers: 5 });
-		const alphaDraft = await m.Campaign.findOne({ accountId: jane.accountId, newsletterId: alpha, status: "draft" }).lean();
+		const alphaDraft = await m.db.getOne("SELECT * FROM campaigns WHERE accountId = ? AND newsletterId = ? AND status = 'draft'", [jane.accountId, alpha]);
 		const sent = await api(jane.key, "POST", `/campaigns/${alphaDraft._id}/send`);
 		assert.equal(sent.status, 402, JSON.stringify(sent.body));
 		assert.equal(sent.body.error.code, "plan_limit_subscribers");
@@ -235,7 +232,7 @@ describe("up to 3 newsletters", () => {
 		const response = await api(key, "POST", "/newsletters", { name: "Four" });
 		assert.equal(response.status, 409);
 		assert.deepEqual(response.body, { error: { code: "conflict", message: limit } });
-		assert.equal(await m.Newsletter.countDocuments({ accountId: user.accountId }), 3);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM newsletters WHERE accountId = ?", [user.accountId]), 3);
 
 		const listed = (await api(key, "GET", "/newsletters")).body.newsletters;
 		assert.deepEqual(listed.map(({ slug }) => slug), ["three-one", "three-two", "three-three"], "first created first");
@@ -248,13 +245,13 @@ describe("Add a newsletter's dialog", () => {
 		const user = await signIn("short@example.com");
 		await createNewsletter(user, "short-first");
 		const open = await createNewsletter(user, "short-open");
-		await m.Newsletter.updateOne({ accountId: user.accountId, _id: open }, { $set: { fromName: "Jo", postalAddress: "2 Side St, Lyon" } });
+		await m.db.execute("UPDATE newsletters SET fromName = ?, postalAddress = ? WHERE accountId = ? AND _id = ?", ["Jo", "2 Side St, Lyon", user.accountId, open]);
 		assert.deepEqual(await select(user, open, "/domains"), { ok: true });
 		assert.deepEqual(await as(user, () => m.newsletters.createNewsletter(null, form({ name: " " }))), { error: "Name your newsletter" });
 
 		const url = await as(user, () => catchRedirect(m.newsletters.createNewsletter(null, form({ name: "Third letter", description: "Two ideas." }))));
 		assert.equal(url, "/newsletters");
-		const created = await m.Newsletter.findOne({ accountId: user.accountId, slug: "third-letter" }).lean();
+		const created = await m.db.getOne("SELECT * FROM newsletters WHERE accountId = ? AND slug = ?", [user.accountId, "third-letter"]);
 		assert.deepEqual(
 			[created.name, created.description, created.fromName, created.postalAddress, created.fromEmail],
 			["Third letter", "Two ideas.", "Jo", "2 Side St, Lyon", "hello@third-letter.mailcheapmail.com"]
@@ -273,7 +270,7 @@ describe("Add a newsletter's dialog", () => {
 			assert.deepEqual(await add({ name: "Own notes" }), { error: "From email is invalid" });
 			assert.equal(await catchRedirect(add({ name: "Own notes", fromEmail: "notes@own-domain.dev" })), "/newsletters");
 		});
-		const created = await m.Newsletter.findOne({ accountId: user.accountId, slug: "own-notes" }).lean();
+		const created = await m.db.getOne("SELECT * FROM newsletters WHERE accountId = ? AND slug = ?", [user.accountId, "own-notes"]);
 		assert.equal(created.fromEmail, "notes@own-domain.dev");
 	});
 
@@ -312,7 +309,7 @@ describe("the REST API and MCP with several newsletters", () => {
 		assert.equal((await api(jane.key, "GET", "/contacts/both%40example.org?newsletter=beta-letter")).body.newsletterId, beta);
 		const unsubscribed = await api(jane.key, "PATCH", "/contacts/both%40example.org", { newsletter: "alpha", status: "unsubscribed" });
 		assert.equal(unsubscribed.body.newsletterId, alpha);
-		assert.equal((await m.Contact.findOne({ accountId: jane.accountId, newsletterId: beta, email: "both@example.org" }).lean()).status, "active");
+		assert.equal((await m.db.getOne("SELECT * FROM contacts WHERE accountId = ? AND newsletterId = ? AND email = ?", [jane.accountId, beta, "both@example.org"])).status, "active");
 	});
 
 	test("each newsletter has its own shared address and archive, after its slug", async () => {

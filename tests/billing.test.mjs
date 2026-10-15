@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, beforeEach, describe, test } from "node:test";
 import Stripe from "stripe";
-import { activate, as, callApi, catchRedirect, form, mockStripe, signIn, startTestApp } from "./helpers/app.mjs";
+import { execute } from "../lib/db.js";
+import { updateRows } from "../lib/records.js";
+import { activate, as, callApi, catchRedirect, findAccount, form, mockStripe, signIn, startTestApp } from "./helpers/app.mjs";
 
 // Stripe's API is answered by the handler each test gives mockStripe; events are signed like Stripe signs them.
 let app;
@@ -76,7 +78,7 @@ async function createKey(user, name) {
 }
 
 async function account(user) {
-	return m.Account.findById(user.accountId).lean();
+	return findAccount(user.accountId);
 }
 
 function invoice({ subscriptionId, accountId, customer, start, end, reason = "subscription_cycle" }) {
@@ -98,7 +100,6 @@ before(async () => {
 		checkoutRoute: await import("../app/(account)/billing/checkout/route.js"),
 		returnRoute: await import("../app/(account)/billing/return/route.js"),
 		auth: await import("../lib/auth.js"),
-		Account: (await import("../models/Account.js")).default,
 		checkoutSessions: new Map(),
 	};
 });
@@ -166,7 +167,7 @@ describe("checkout", () => {
 		const user = await signIn("api-checkout@example.com");
 		await activate(user);
 		const { key } = await createKey(user, "Server");
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { subscriptionStatus: "canceled" } });
+		await execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 
 		const response = await callApi("POST", "/api/v1/billing/change-plan", { key, body: { plan: "growth" } });
 		assert.deepEqual(response.body, { url: "https://checkout.stripe.com/c/pay/cs_test_1", kind: "checkout" });
@@ -224,8 +225,8 @@ describe("checkout", () => {
 		m.checkoutSessions.set("cs_owner", { id: "cs_owner", object: "checkout.session", mode: "subscription", status: "complete", client_reference_id: String(owner.accountId), customer: "cus_owner", subscription: "sub_owner" });
 		const url = await as(visitor, () => catchRedirect(m.returnRoute.GET(new Request("http://localhost:3000/billing/return?session_id=cs_owner"))));
 		assert.equal(url, "/billing?checkout=pending");
-		assert.equal((await account(visitor)).subscriptionStatus, undefined);
-		assert.equal((await account(owner)).subscriptionStatus, undefined, "nothing changed for the owner either");
+		assert.equal((await account(visitor)).subscriptionStatus, null);
+		assert.equal((await account(owner)).subscriptionStatus, null, "nothing changed for the owner either");
 	});
 });
 
@@ -252,7 +253,7 @@ describe("subscription changes", () => {
 
 		subscriptions.set("sub_life", { ...subscriptions.get("sub_life"), cancel_at_period_end: false });
 		await deliver("customer.subscription.updated", { id: "sub_life" });
-		assert.equal((await account(user)).cancelAt, undefined);
+		assert.equal((await account(user)).cancelAt, null);
 	});
 
 	test("the event's own copy is never trusted: the subscription is read from Stripe", async () => {
@@ -314,7 +315,7 @@ describe("invoice.paid", () => {
 		const user = await signIn("invoices@example.com");
 		subscriptions.set("sub_inv", subscription({ id: "sub_inv", accountId: user.accountId, customer: "cus_inv" }));
 		await deliver("customer.subscription.created", { id: "sub_inv" });
-		await m.Account.updateOne({ _id: user.accountId }, { $set: { "usage.emailsSent": 12_345 } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { set: { "usage.emailsSent": 12_345 } });
 
 		const first = invoice({ subscriptionId: "sub_inv", accountId: user.accountId, customer: "cus_inv", start: NOW, end: NOW + 30 * DAY, reason: "subscription_create" });
 		assert.equal((await deliver("invoice.paid", first)).body.reset, false, "the first invoice pays the period already started");
@@ -326,7 +327,7 @@ describe("invoice.paid", () => {
 		assert.equal(current.usage.emailsSent, 0);
 		assert.equal(current.usage.periodStart.getTime(), (NOW + 30 * DAY) * 1000);
 
-		await m.Account.updateOne({ _id: user.accountId }, { $inc: { "usage.emailsSent": 40 } });
+		await updateRows("accounts", { where: "_id = ?", params: [user.accountId] }, { inc: { "usage.emailsSent": 40 } });
 		assert.equal((await deliver("invoice.paid", renewal)).body.reset, false, "redelivered");
 		current = await account(user);
 		assert.equal(current.usage.emailsSent, 40, "emails sent since the renewal still count");

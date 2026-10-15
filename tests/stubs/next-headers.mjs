@@ -8,6 +8,8 @@ export function runWithRequest({ jar = new Map(), headers = {} } = {}, run) {
 	const cookie = [...jar].map(([name, value]) => `${name}=${value}`).join("; ");
 	const requestHeaders = new Headers({ "x-forwarded-for": "203.0.113.10", "user-agent": "node-test", ...headers });
 	if (cookie) requestHeaders.set("cookie", cookie);
+	// Cloudflare's edge sets CF-Connecting-IP; tests name the visitor's address with x-forwarded-for.
+	if (!requestHeaders.has("cf-connecting-ip")) requestHeaders.set("cf-connecting-ip", requestHeaders.get("x-forwarded-for").split(",")[0].trim());
 	return storage.run({ jar, headers: requestHeaders }, run);
 }
 

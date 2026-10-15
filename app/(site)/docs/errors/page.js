@@ -3,6 +3,10 @@ import HeaderDocs from "@/components/HeaderDocs";
 import { ERRORS } from "@/lib/actions/errors";
 import { getDocsPageMetadata } from "@/lib/docs/llms";
 
+// Rendered when asked: APP_URL is set where the Worker runs, not where it's built, so a build-time render would
+// carry the wrong address.
+export const dynamic = "force-dynamic";
+
 export const metadata = getDocsPageMetadata("/docs/errors");
 
 export default function ErrorsPage() {
