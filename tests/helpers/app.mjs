@@ -7,16 +7,24 @@ import { createDatabase } from "./d1.mjs";
 
 // Platform emails sent through Resend's API, newest last.
 export const platformEmails = [];
+// Platform emails sent through Cloudflare Email Service's API, with the account and token, newest last.
+export const cloudflareEmails = [];
 let stripeHandler = null;
 let visitor = 0;
 
-// No test talks to the network: Resend is recorded and Stripe answers from mockStripe's handler.
+// No test talks to the network: Resend and Cloudflare Email Service are recorded and Stripe answers from mockStripe's handler.
 function installFetch() {
 	globalThis.fetch = async (input, init = {}) => {
 		const url = String(input?.url ?? input);
 		if (url === "https://api.resend.com/emails") {
 			platformEmails.push(JSON.parse(init.body));
 			return Response.json({ id: `email_${platformEmails.length}` });
+		}
+		const cloudflare = /^https:\/\/api\.cloudflare\.com\/client\/v4\/accounts\/([^/]+)\/email\/sending\/send$/.exec(url);
+		if (cloudflare) {
+			const body = JSON.parse(init.body);
+			cloudflareEmails.push({ accountId: cloudflare[1], authorization: init.headers.Authorization, body });
+			return Response.json({ success: true, errors: [], messages: [], result: { message_id: `cf_${cloudflareEmails.length}`, delivered: body.to, queued: [], permanent_bounces: [] } });
 		}
 		if (url.startsWith("https://api.stripe.com/")) {
 			if (!stripeHandler) throw new Error(`Unexpected Stripe request: ${init.method ?? "GET"} ${url}`);

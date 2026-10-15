@@ -112,9 +112,9 @@ npm ci
 cp .env.example .env
 ```
 
-In `.env`, set `BETTER_AUTH_SECRET` (at least 32 characters: `openssl rand -base64 48`), `ADMIN_EMAILS` (your email) and `EMAIL_FROM` (like `MailCheap <login@mail.example.com>`, on a domain your Resend account or email provider verified). Generate a new secret for each install and keep it: email links depend on it, and with a short one MailCheap refuses to start. `.env` is ignored by Git.
+In `.env`, set `BETTER_AUTH_SECRET` (at least 32 characters: `openssl rand -base64 48`), `ADMIN_EMAILS` (your email) and `EMAIL_FROM` (like `MailCheap <login@mail.example.com>`, on a domain your Resend account, Cloudflare Email Service or email provider verified). Generate a new secret for each install and keep it: email links depend on it, and with a short one MailCheap refuses to start. `.env` is ignored by Git.
 
-Sign-in codes need a way to reach you. The quickest is [Resend](https://resend.com): verify `EMAIL_FROM`'s domain there and add `RESEND_API_KEY`. Without it, codes go through SES or PostShiba once step 6 is done; in local development they're printed in the console.
+Sign-in codes need a way to reach you. The quickest is [Resend](https://resend.com): verify `EMAIL_FROM`'s domain there and add `RESEND_API_KEY`. Or [Cloudflare Email Service](https://developers.cloudflare.com/email-service/): onboard `EMAIL_FROM`'s domain, then add `CLOUDFLARE_EMAIL_API_TOKEN` (a token that can send emails) and `CLOUDFLARE_EMAIL_ACCOUNT_ID`. With both set, `PLATFORM_EMAIL_PROVIDER` (`resend` or `cloudflare`) picks one; Resend without it. Without either, codes go through SES or PostShiba once step 6 is done; in local development they're printed in the console.
 
 ### 2. Connect Alchemy to Cloudflare
 
@@ -268,7 +268,9 @@ Set them in `.env` (one file per stage if they differ); Alchemy turns each into 
 | `ALLOWED_EMAILS` | Optional | Not used | Who else can sign in to a self-hosted server: addresses and `@domain` entries, comma-separated |
 | `RATE_LIMITS` | Optional | Optional | An action's limit instead of its default, in the same window, per key and per account: `add_domain=50,send_test_email=100`. `/docs/authentication` lists the limits |
 | `EMAIL_FROM` | Required | Optional | From address of sign-in codes and alerts. MailCheap Cloud uses `MailCheap <hello@r.mailcheap.ai>` without it, with replies to `hello@mailcheap.ai` |
-| `RESEND_API_KEY` | Optional | Required | Sign-in codes and alerts through Resend. Self-hosted without it, they go through the email provider; MailCheap Cloud never does that and refuses to start without it |
+| `RESEND_API_KEY` | Optional | Required, or Cloudflare | Sign-in codes and alerts through Resend. Self-hosted without it or Cloudflare, they go through the email provider; MailCheap Cloud never does that and refuses to start without one of them |
+| `CLOUDFLARE_EMAIL_API_TOKEN`, `CLOUDFLARE_EMAIL_ACCOUNT_ID` | Optional | Required, or Resend | Sign-in codes and alerts through Cloudflare Email Service instead: a token that can send emails, and the account `EMAIL_FROM`'s domain is onboarded on |
+| `PLATFORM_EMAIL_PROVIDER` | Optional | Optional | `resend` or `cloudflare`, when both are set. Default: Resend. Naming one without its keys, or any other value, stops sign-in codes and alerts (and MailCheap Cloud refuses to start) |
 | `MAILCHEAP_CLOUD` | Unset | `true` | Turns on open sign-up, plans and Stripe billing. Only exactly `true` counts. |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Not used | Required | Billing, and the signing secret of `<APP_URL>/api/webhooks/stripe`. MailCheap Cloud refuses to start without them |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Optional | Optional | Google sign-in. Redirect URI `<APP_URL>/api/auth/callback/google` |
@@ -327,7 +329,7 @@ cp .env.example .env   # set BETTER_AUTH_SECRET, ADMIN_EMAILS
 npm run dev
 ```
 
-- Without `MAILCHEAP_CLOUD` it runs as a self-hosted server: sign in with an email in `ADMIN_EMAILS` or `ALLOWED_EMAILS`. Without `RESEND_API_KEY`, development prints the code in the console (`[signin] Code for ...`); production never does.
+- Without `MAILCHEAP_CLOUD` it runs as a self-hosted server: sign in with an email in `ADMIN_EMAILS` or `ALLOWED_EMAILS`. Without `RESEND_API_KEY` or Cloudflare Email Service's keys, development prints the code in the console (`[signin] Code for ...`); production never does.
 - Restarting keeps the local data in `.alchemy/local`; delete that folder for a fresh database. Migrations in `migrations/` apply on start.
 - Trigger the jobs Worker's cron by hand: open `/cdn-cgi/handler/scheduled?cron=*+*+*+*+*` on the jobs Worker's local URL.
 - To work on MailCheap Cloud's own parts, set `MAILCHEAP_CLOUD=true` with Stripe test keys and a Resend key: the cloud doesn't start without them. Run `stripe listen --forward-to <local-url>/api/webhooks/stripe` and use its signing secret as `STRIPE_WEBHOOK_SECRET`.
@@ -359,13 +361,13 @@ Integration tests (sign-in, isolation, billing, plan limits, admin, sending, dom
 - **Email providers.** `lib/email-provider` is the one switch: each adapter (`ses.js`, `postshiba.js`) does tenants, domains and sends, and its errors carry a stable outcome that the batch turns into retry later, skip the address, pause the campaign or fail the email. Both providers' webhooks verify each event and store it in D1 before answering; the jobs Worker then applies it. Both providers' events become one shape (`lib/email-event-rules.js`) and are recorded once, only in the account they name; counters move in SQL triggers.
 - **Images** (`lib/image-storage.js`): uploads from the editor, the newsletter settings and `upload_image` go to the R2 asset bucket under `accounts/<accountId>/images/` with a random part in the name. Nothing is moved, and nothing is deleted until its account is, since sent emails point at the URLs. Each upload is a row in `uploads`, which the image picker and `list_images` list and the purge deletes files by; a file whose row can't be saved is deleted right away.
 - **Deleting an account** (`lib/account-deletion.js`, `lib/account-purge.js`) only happens on its page, with a code sent for it: never through the REST API or MCP. It's refused while Stripe bills a plan or a campaign sends or is scheduled. At once, every session ends, API keys and connected apps stop, the account counts as unpaid (no sends, signups or archive) and its tenant is suspended. An outbox job runs 30 days later, unless signing in restored the account: it deletes the user, everything with the account's id, its domains and shared subdomains at the provider and in DNS, its tenant and its images, and keeps a deletion record (a keyed hash of the email and the dates). A step that fails is tried again the next day, with an alert.
-- **MailCheap's own emails** (`lib/platform-email.js`): Resend when `RESEND_API_KEY` is set; on a self-hosted server without it, the provider's `sendPlatformEmail`. MailCheap Cloud never sends them through the provider.
+- **MailCheap's own emails** (`lib/platform-email.js`): Resend or Cloudflare Email Service, whichever has its keys (`PLATFORM_EMAIL_PROVIDER` picks when both do, `getPlatformEmailService` in `lib/config.js`); on a self-hosted server with neither, the provider's `sendPlatformEmail`. MailCheap Cloud never sends them through the provider.
 - **Opens and clicks** go through `/o/...` and `/c/...` on the newsletter's host. Clicks within 30 seconds of the send, or from known link scanners, don't count. While the account is blocked, `/c/...` answers an uncached page saying the link is disabled instead of redirecting, and its opens and clicks don't count.
 - **Archive pages** are cached and refresh when you send or save.
 
 ## Running MailCheap Cloud
 
-`MAILCHEAP_CLOUD=true` is what [mailcheap.ai](https://mailcheap.ai) runs with: sign-up open to anyone, a newsletter setup at `/welcome` right after sign-in, a dashboard to try before paying with a paywall on sending, imports, domains and API keys, plan limits, and MailCheap's own emails through Resend only. Its landing, pricing and legal pages live in its own repository. It refuses to start without `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `RESEND_API_KEY`, and `/api/health` answers 503 with the reason, so the cloud can't run without billing by mistake.
+`MAILCHEAP_CLOUD=true` is what [mailcheap.ai](https://mailcheap.ai) runs with: sign-up open to anyone, a newsletter setup at `/welcome` right after sign-in, a dashboard to try before paying with a paywall on sending, imports, domains and API keys, plan limits, and MailCheap's own emails through Resend or Cloudflare Email Service only. Its landing, pricing and legal pages live in its own repository. It refuses to start without `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `RESEND_API_KEY` (or Cloudflare Email Service's keys), and `/api/health` answers 503 with the reason, so the cloud can't run without billing by mistake.
 
 | Plan | Monthly | Yearly | Emails per month | Subscribers |
 | --- | --- | --- | --- | --- |

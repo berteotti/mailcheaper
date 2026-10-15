@@ -36,7 +36,7 @@
 - Sign-in codes are 6 digits, expire after 5 minutes, die after 3 wrong tries and are stored hashed. Sending them is rate limited per IP and per inbox (an address's dots and +tags count as one where its provider ignores them), checking them per IP. Better Auth's own code and password routes are closed.
 - A Google sign-in opens a new account, or joins an existing user, only when Google says it verified that email: Google isn't a trusted provider for account linking.
 - MailCheap Cloud takes one account per inbox: a new user whose address reaches an existing user's inbox (Gmail ignores dots and +tags; Outlook, Hotmail, Live, iCloud, Fastmail and Proton +tags; Yahoo -tags, in `lib/email-aliases.js`) is refused once the code or Google proved the address, so the refusal tells nobody else anything. Throwaway domains get no code and no new account, and an IP address gets 3 new accounts a day. Accounts from before keep signing in.
-- Without `RESEND_API_KEY` or an email provider, development prints codes in the server console; production never does.
+- Without `RESEND_API_KEY`, Cloudflare Email Service's keys or an email provider, development prints codes in the server console; production never does.
 - After sign-in, the app only goes on to a path on its own site with at most a plain query string (`/billing/checkout?plan=growth&interval=year`): never another host or a protocol-relative path.
 - `/billing/checkout` (the plan buttons) only opens Checkout for a signed-in account without a plan. A paying account gets the billing page, where Stripe confirms any change.
 - An account without a plan can set up its newsletter and write campaigns, nothing that reaches outside MailCheap: no emails (tests and signup emails included), imports, domains or API keys, nothing at the email provider or in DNS until its plan starts, and 20 image uploads and 5 contacts added by hand a day.
@@ -64,12 +64,12 @@ Without `MAILCHEAP_CLOUD=true` (only that exact value counts), a server is self-
 
 ## MailCheap's own emails
 
-- Sign-in codes and alerts go through Resend, apart from customers' emails. On MailCheap Cloud they never go any other way. A self-hosted server without `RESEND_API_KEY` sends them through its email provider from `EMAIL_FROM`: on SES outside every tenant, on PostShiba through a tenant of their own (`mc-platform`), so a customer's tenant never carries them.
+- Sign-in codes and alerts go through Resend or Cloudflare Email Service, apart from customers' emails. On MailCheap Cloud they never go any other way. A self-hosted server with neither sends them through its email provider from `EMAIL_FROM`: on SES outside every tenant, on PostShiba through a tenant of their own (`mc-platform`), so a customer's tenant never carries them.
 - `SENDING_ENABLED` holds readers' emails only: sign-in codes and alerts don't wait for it.
 
 ## Billing
 
-- MailCheap Cloud refuses to start without `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `RESEND_API_KEY`, and `/api/health` answers 503 with which one is missing (names, never values), so the cloud can't run free or without sign-in emails by mistake.
+- MailCheap Cloud refuses to start without `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` and `RESEND_API_KEY` (or `CLOUDFLARE_EMAIL_API_TOKEN` and `CLOUDFLARE_EMAIL_ACCOUNT_ID`), and `/api/health` answers 503 with which one is missing (names, never values), so the cloud can't run free or without sign-in emails by mistake.
 - Stripe webhooks are verified with `STRIPE_WEBHOOK_SECRET`, and every subscription event re-reads the subscription from Stripe instead of trusting the payload.
 - The checkout return only syncs a session whose `client_reference_id` is the signed-in account.
 - Checkout refuses a Stripe price whose amount or interval doesn't match `lib/plans.js`.
