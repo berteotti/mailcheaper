@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { env } from "./bindings.mjs";
 
 const root = new URL("../../", import.meta.url);
+const executeNow = Symbol("executeNow");
 
 // An in-memory D1 with every migration applied, bound as env.DB until it's closed.
 export function createDatabase() {
@@ -35,13 +36,14 @@ export function createDatabase() {
 				async first() { return prepared.get(...params) ?? null; },
 				async all() { return execute(); },
 				async run() { return execute(); },
+				[executeNow]: execute,
 			};
 		},
+		// Like D1, a batch runs at once: awaiting between statements would let another batch BEGIN inside this one.
 		async batch(statements) {
 			sqlite.exec("BEGIN");
 			try {
-				const results = [];
-				for (const statement of statements) results.push(await statement.all());
+				const results = statements.map((statement) => statement[executeNow]());
 				sqlite.exec("COMMIT");
 				return results;
 			} catch (error) {

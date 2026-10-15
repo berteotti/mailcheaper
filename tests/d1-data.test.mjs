@@ -95,3 +95,10 @@ test("added by hand with consent skips confirmation; resubscribing brings back a
 	await execute("INSERT INTO suppressions (_id, accountId, email, reason, createdAt, updatedAt) VALUES (?, ?, ?, 'bounce', 0, 0)", [newId(), accountId, "kim@example.com"]);
 	assert.equal((await upsertContact({ newsletter, email: "kim@example.com", resubscribe: true })).contact.status, "bounced");
 });
+
+test("batches started together each run whole, like D1's", async (t) => {
+	const db = database(t);
+	const tables = (name) => [db.prepare("SELECT name FROM sqlite_master WHERE name = ?").bind(name), db.prepare("PRAGMA index_list('contacts')")];
+	const [first, second] = await Promise.all([db.batch(tables("contacts")), db.batch(tables("campaigns"))]);
+	assert.deepEqual([first[0].results[0].name, second[0].results[0].name], ["contacts", "campaigns"]);
+});
