@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
-import { activate, addVerifiedDomain, as, catchRedirect, form, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { activate, addVerifiedDomain, as, catchRedirect, cloudflareEmails, form, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { POSTSHIBA, POSTSHIBA_ENV, createFakePostshiba } from "./helpers/postshiba.mjs";
 import { platformSent, sent as sesEmails } from "./stubs/ses.mjs";
 
-// Who carries MailCheap's own emails (sign-in codes, alerts): on MailCheap Cloud always Resend, never the
-// email provider; on a self-hosted server Resend when it's set up, else the provider. Customers' emails
+// Who carries MailCheap's own emails (sign-in codes, alerts): on MailCheap Cloud always Resend or Cloudflare,
+// never the email provider; on a self-hosted server Resend or Cloudflare when one is set up, else the provider. Customers' emails
 // (issues, welcome, confirmation, last-chance, tests) always go through the provider.
 const SELF_HOSTED = { MAILCHEAP_CLOUD: "", EMAIL_FROM: "MailCheap <login@mail.selfhost.dev>" };
 const CODE_SUBJECT = /^\d{6} is your MailCheap code$/;
+const CLOUDFLARE = { CLOUDFLARE_EMAIL_API_TOKEN: "cf_test_token", CLOUDFLARE_EMAIL_ACCOUNT_ID: "0123456789abcdef" };
 
 let app;
 let fake;
@@ -33,7 +34,7 @@ async function capturingErrors(run) {
 }
 
 function counts() {
-	return { resend: platformEmails.length, ses: platformSent.length, postshiba: fake.state.sends.length, customer: sesEmails.length };
+	return { resend: platformEmails.length, cloudflare: cloudflareEmails.length, ses: platformSent.length, postshiba: fake.state.sends.length, customer: sesEmails.length };
 }
 
 function added(before) {
@@ -62,7 +63,7 @@ describe("MailCheap Cloud", () => {
 		assert.deepEqual(await requestCode("cloud@example.com"), { email: "cloud@example.com" });
 		await m.alerts.sendAlert({ accountId: null, key: "cloud-split", title: "Cloud alert", detail: "For the admins" });
 		await withEnv(POSTSHIBA_ENV, async () => assert.deepEqual(await requestCode("cloud-ps@example.com"), { email: "cloud-ps@example.com" }));
-		assert.deepEqual(added(before), { resend: 3, ses: 0, postshiba: 0, customer: 0 });
+		assert.deepEqual(added(before), { resend: 3, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
 		assert.deepEqual(platformEmails.at(-3).to, ["cloud@example.com"]);
 		assert.equal(platformEmails.at(-3).from, "MailCheap <hello@r.mailcheap.ai>", "from a subdomain, apart from mailcheap.ai");
 		assert.equal(platformEmails.at(-3).reply_to, "hello@mailcheap.ai", "replies reach support");
@@ -70,16 +71,50 @@ describe("MailCheap Cloud", () => {
 		assert.equal(platformEmails.at(-2).subject, "[MailCheap] Cloud alert");
 	});
 
-	test("without RESEND_API_KEY nothing goes out: the cloud never falls back to the email provider", async () => {
+	test("with Cloudflare's keys instead, or chosen with both, Cloudflare Email Service sends them", async () => {
+		const before = counts();
+		await withEnv({ ...CLOUDFLARE, RESEND_API_KEY: "" }, async () => {
+			assert.deepEqual(await requestCode("cloud-cf@example.com"), { email: "cloud-cf@example.com" });
+			assert.equal(m.platform.canSendPlatformEmail(), true);
+		});
+		await withEnv({ ...CLOUDFLARE, PLATFORM_EMAIL_PROVIDER: "cloudflare" }, async () => {
+			await m.alerts.sendAlert({ accountId: null, key: "cloud-cf", title: "Cloudflare alert", detail: "For the admins" });
+		});
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 2, ses: 0, postshiba: 0, customer: 0 });
+		const [code, alert] = cloudflareEmails.slice(-2);
+		assert.equal(code.accountId, "0123456789abcdef");
+		assert.equal(code.authorization, "Bearer cf_test_token");
+		assert.deepEqual(code.body.from, { address: "hello@r.mailcheap.ai", name: "MailCheap" });
+		assert.deepEqual(code.body.to, ["cloud-cf@example.com"]);
+		assert.equal(code.body.reply_to, "hello@mailcheap.ai");
+		assert.match(code.body.subject, CODE_SUBJECT);
+		assert.match(code.body.html, /Your sign-in code/);
+		assert.deepEqual([alert.body.to, alert.body.subject], [["admin@example.com"], "[MailCheap] Cloudflare alert"]);
+	});
+
+	test("with both, Resend unless PLATFORM_EMAIL_PROVIDER says cloudflare; naming one without its keys sends nothing", async () => {
+		const before = counts();
+		await withEnv(CLOUDFLARE, async () => assert.deepEqual(await requestCode("cloud-both@example.com"), { email: "cloud-both@example.com" }));
+		assert.deepEqual(added(before), { resend: 1, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
+		await withEnv({ PLATFORM_EMAIL_PROVIDER: "cloudflare" }, async () => {
+			const { result, logged } = await capturingErrors(() => requestCode("cloud-missing@example.com"));
+			assert.equal(result.error, "Couldn't send the code. Try again in a minute.");
+			assert.match(logged, /PLATFORM_EMAIL_PROVIDER is cloudflare, but CLOUDFLARE_EMAIL_API_TOKEN and CLOUDFLARE_EMAIL_ACCOUNT_ID are not set/);
+			assert.equal(m.platform.canSendPlatformEmail(), false);
+		});
+		assert.deepEqual(added(before), { resend: 1, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 }, "never Resend in its place");
+	});
+
+	test("without Resend or Cloudflare nothing goes out: the cloud never falls back to the email provider", async () => {
 		const before = counts();
 		await withEnv({ RESEND_API_KEY: "" }, async () => {
 			const { result, logged } = await capturingErrors(() => requestCode("no-resend@example.com"));
 			assert.equal(result.error, "Couldn't send the code. Try again in a minute.");
-			assert.match(logged, /RESEND_API_KEY is not set: MailCheap Cloud sends its own emails through Resend only/);
+			assert.match(logged, /Neither RESEND_API_KEY nor CLOUDFLARE_EMAIL_API_TOKEN is set: MailCheap Cloud sends its own emails through Resend or Cloudflare only/);
 			assert.equal(m.platform.canSendPlatformEmail(), false, "alerts stay in the logs");
 			await m.alerts.sendAlert({ accountId: null, key: "cloud-no-resend", title: "Unsent", detail: "Logged only" });
 		});
-		assert.deepEqual(added(before), { resend: 0, ses: 0, postshiba: 0, customer: 0 });
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
 	});
 
 	test("a customer's test email goes through the email provider, not Resend", async () => {
@@ -95,7 +130,7 @@ describe("MailCheap Cloud", () => {
 
 		const before = counts();
 		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
-		assert.deepEqual(added(before), { resend: 0, ses: 0, postshiba: 0, customer: 1 });
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 0, ses: 0, postshiba: 0, customer: 1 });
 		assert.equal(sesEmails.at(-1).tenantName, `mc-${user.accountId}`, "in the account's own tenant");
 		assert.equal(sesEmails.at(-1).subject, "[Test] Issue");
 	});
@@ -107,25 +142,35 @@ describe("self-hosted server", () => {
 		await withEnv({ ...SELF_HOSTED, ALLOWED_EMAILS: "self-resend@example.com" }, async () => {
 			assert.deepEqual(await requestCode("self-resend@example.com"), { email: "self-resend@example.com" });
 		});
-		assert.deepEqual(added(before), { resend: 1, ses: 0, postshiba: 0, customer: 0 });
+		assert.deepEqual(added(before), { resend: 1, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
 		assert.equal(platformEmails.at(-1).from, "MailCheap <login@mail.selfhost.dev>");
 		assert.equal(platformEmails.at(-1).reply_to, undefined, "no MailCheap support address on a self-hosted server");
 	});
 
-	test("without it, codes and alerts go through SES outside every tenant, even with sending off", async () => {
+	test("with Cloudflare's keys, Cloudflare Email Service sends them from EMAIL_FROM, not the email provider", async () => {
+		const before = counts();
+		await withEnv({ ...SELF_HOSTED, ...CLOUDFLARE, RESEND_API_KEY: "", ALLOWED_EMAILS: "self-cf@example.com" }, async () => {
+			assert.deepEqual(await requestCode("self-cf@example.com"), { email: "self-cf@example.com" });
+		});
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 1, ses: 0, postshiba: 0, customer: 0 });
+		assert.deepEqual(cloudflareEmails.at(-1).body.from, { address: "login@mail.selfhost.dev", name: "MailCheap" });
+		assert.equal(cloudflareEmails.at(-1).body.reply_to, undefined);
+	});
+
+	test("without Resend or Cloudflare, codes and alerts go through SES outside every tenant, even with sending off", async () => {
 		const before = counts();
 		await withEnv({ ...SELF_HOSTED, RESEND_API_KEY: "", SENDING_ENABLED: "false", ALLOWED_EMAILS: "self-ses@example.com" }, async () => {
 			assert.deepEqual(await requestCode("self-ses@example.com"), { email: "self-ses@example.com" });
 			await m.alerts.sendAlert({ accountId: null, key: "self-ses", title: "Self-hosted alert", detail: "For the admins" });
 		});
-		assert.deepEqual(added(before), { resend: 0, ses: 2, postshiba: 0, customer: 0 });
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 0, ses: 2, postshiba: 0, customer: 0 });
 		const [code, alert] = platformSent.slice(-2);
 		assert.deepEqual([code.from, code.to, code.tenantName, code.configurationSet], ["MailCheap <login@mail.selfhost.dev>", "self-ses@example.com", undefined, undefined]);
 		assert.match(code.subject, CODE_SUBJECT);
 		assert.deepEqual([alert.to, alert.subject], ["admin@example.com", "[MailCheap] Self-hosted alert"]);
 	});
 
-	test("without it on PostShiba, a tenant of their own sends them once EMAIL_FROM's domain is verified there", async () => {
+	test("without either on PostShiba, a tenant of their own sends them once EMAIL_FROM's domain is verified there", async () => {
 		const env = { ...SELF_HOSTED, ...POSTSHIBA_ENV, RESEND_API_KEY: "", ALLOWED_EMAILS: "self-ps@example.com" };
 		await withEnv(env, async () => {
 			const { result, logged } = await capturingErrors(() => requestCode("self-ps@example.com"));
@@ -141,7 +186,7 @@ describe("self-hosted server", () => {
 			fake.verifyDomain("mail.selfhost.dev");
 			const before = counts();
 			assert.deepEqual(await requestCode("self-ps@example.com"), { email: "self-ps@example.com" });
-			assert.deepEqual(added(before), { resend: 0, ses: 0, postshiba: 1, customer: 0 });
+			assert.deepEqual(added(before), { resend: 0, cloudflare: 0, ses: 0, postshiba: 1, customer: 0 });
 			const { clusterId, body } = fake.state.sends.at(-1);
 			assert.equal(clusterId, POSTSHIBA.transactionalClusterId);
 			assert.deepEqual([body.tenant, body.from, body.to], [tenants[0].id, "MailCheap <login@mail.selfhost.dev>", ["self-ps@example.com"]]);
@@ -152,7 +197,7 @@ describe("self-hosted server", () => {
 		});
 	});
 
-	test("without EMAIL_FROM, or without Resend and a provider, nothing is sent and alerts are only logged", async () => {
+	test("without EMAIL_FROM, or without Resend, Cloudflare and a provider, nothing is sent and alerts are only logged", async () => {
 		const before = counts();
 		await withEnv({ ...SELF_HOSTED, EMAIL_FROM: "", ALLOWED_EMAILS: "no-from@example.com" }, async () => {
 			const { result, logged } = await capturingErrors(() => requestCode("no-from@example.com"));
@@ -164,6 +209,6 @@ describe("self-hosted server", () => {
 			assert.equal(m.platform.canSendPlatformEmail(), false);
 			await m.alerts.sendAlert({ accountId: null, key: "self-nothing", title: "Nowhere to go", detail: "Logged only" });
 		});
-		assert.deepEqual(added(before), { resend: 0, ses: 0, postshiba: 0, customer: 0 });
+		assert.deepEqual(added(before), { resend: 0, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
 	});
 });

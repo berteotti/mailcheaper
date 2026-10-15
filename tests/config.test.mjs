@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getAdminEmails, getConfigProblems, getRateLimitOverrides, isEmailAllowed } from "../lib/config.js";
+import { getAdminEmails, getConfigProblems, getPlatformEmailService, getRateLimitOverrides, isEmailAllowed } from "../lib/config.js";
 import { register } from "../instrumentation.js";
 
 const STRONG = { BETTER_AUTH_SECRET: "s".repeat(32) };
 const CLOUD = { ...STRONG, MAILCHEAP_CLOUD: "true", STRIPE_SECRET_KEY: "sk_live_x", STRIPE_WEBHOOK_SECRET: "whsec_x", RESEND_API_KEY: "re_x" };
+const CLOUDFLARE = { CLOUDFLARE_EMAIL_API_TOKEN: "cf_x", CLOUDFLARE_EMAIL_ACCOUNT_ID: "0123456789abcdef" };
 
 async function withEnv(values, run) {
 	const previous = { ...process.env };
@@ -30,19 +31,40 @@ test("the server doesn't start with a short secret", () =>
 		assert.throws(register, /MailCheap can't start\. BETTER_AUTH_SECRET must be at least 32 characters/);
 	}));
 
-test("MailCheap Cloud needs both Stripe keys and RESEND_API_KEY; a self-hosted server needs none of them", () => {
+test("MailCheap Cloud needs both Stripe keys and Resend or Cloudflare; a self-hosted server needs none of them", () => {
 	assert.deepEqual(getConfigProblems(CLOUD), []);
-	for (const name of ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "RESEND_API_KEY"]) {
+	for (const name of ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]) {
 		const problems = getConfigProblems({ ...CLOUD, [name]: " " });
 		assert.equal(problems.length, 1, name);
 		assert.match(problems[0], new RegExp(`MAILCHEAP_CLOUD is true, so ${name} has to be set`));
 	}
+	assert.deepEqual(getConfigProblems({ ...CLOUD, ...CLOUDFLARE, RESEND_API_KEY: "" }), [], "Cloudflare instead of Resend");
 	assert.match(
-		getConfigProblems({ ...STRONG, MAILCHEAP_CLOUD: "true" })[0],
-		/so STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, RESEND_API_KEY have to be set: the cloud bills through Stripe and sends its own emails through Resend/
+		getConfigProblems({ ...CLOUD, RESEND_API_KEY: " ", CLOUDFLARE_EMAIL_API_TOKEN: "cf_x" })[0],
+		/RESEND_API_KEY, or CLOUDFLARE_EMAIL_API_TOKEN and CLOUDFLARE_EMAIL_ACCOUNT_ID, have to be set/,
+		"a token without its account isn't enough"
 	);
+	assert.match(getConfigProblems({ ...CLOUD, PLATFORM_EMAIL_PROVIDER: "cloudflare" })[0], /PLATFORM_EMAIL_PROVIDER is cloudflare, but CLOUDFLARE_EMAIL_API_TOKEN and CLOUDFLARE_EMAIL_ACCOUNT_ID are not set/);
+	assert.match(getConfigProblems({ ...CLOUD, PLATFORM_EMAIL_PROVIDER: "mailgun" })[0], /PLATFORM_EMAIL_PROVIDER must be resend or cloudflare, not "mailgun"/);
+	const problems = getConfigProblems({ ...STRONG, MAILCHEAP_CLOUD: "true" });
+	assert.match(problems[0], /so STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET have to be set: the cloud bills through Stripe/);
+	assert.match(problems[1], /sends its own emails through Resend or Cloudflare Email Service/);
 	assert.deepEqual(getConfigProblems(STRONG), [], "self-hosted: no Stripe, no Resend");
 	assert.deepEqual(getConfigProblems({ ...STRONG, MAILCHEAP_CLOUD: "yes" }), [], "only exactly true is the cloud");
+});
+
+test("Resend or Cloudflare, whichever has its keys; PLATFORM_EMAIL_PROVIDER picks when both do", () => {
+	const both = { RESEND_API_KEY: "re_x", ...CLOUDFLARE };
+	assert.deepEqual(getPlatformEmailService({}), { service: null });
+	assert.deepEqual(getPlatformEmailService({ RESEND_API_KEY: "re_x" }), { service: "resend" });
+	assert.deepEqual(getPlatformEmailService(CLOUDFLARE), { service: "cloudflare" });
+	assert.deepEqual(getPlatformEmailService({ CLOUDFLARE_EMAIL_API_TOKEN: "cf_x" }), { service: null }, "a token without its account");
+	assert.deepEqual(getPlatformEmailService(both), { service: "resend" });
+	assert.deepEqual(getPlatformEmailService({ ...both, PLATFORM_EMAIL_PROVIDER: " Cloudflare " }), { service: "cloudflare" });
+	assert.deepEqual(getPlatformEmailService({ ...both, PLATFORM_EMAIL_PROVIDER: "resend" }), { service: "resend" });
+	assert.match(getPlatformEmailService({ RESEND_API_KEY: "re_x", PLATFORM_EMAIL_PROVIDER: "cloudflare" }).problem, /CLOUDFLARE_EMAIL_API_TOKEN and CLOUDFLARE_EMAIL_ACCOUNT_ID are not set/);
+	assert.match(getPlatformEmailService({ ...CLOUDFLARE, PLATFORM_EMAIL_PROVIDER: "resend" }).problem, /RESEND_API_KEY is not set/);
+	assert.match(getPlatformEmailService({ ...both, PLATFORM_EMAIL_PROVIDER: "ses" }).problem, /must be resend or cloudflare, not "ses"/);
 });
 
 test("the cloud refuses to start without Stripe or Resend, and its health check fails with the reason", async () => {
