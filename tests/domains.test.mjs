@@ -293,6 +293,31 @@ describe("own domains", () => {
 		assert.deepEqual(await as(first, () => m.domains.addDomainAction(null, form({ domain: "taken.com" }))), { error: "taken.com is already added" });
 	});
 
+	test("an account without an SES tenant yet gets one with its first domain", async () => {
+		const user = await customer("first-domain@example.com", "first-domain");
+		await execute("UPDATE accounts SET ses = '{}' WHERE _id = ?", [user.accountId]);
+		const name = `mc-${user.accountId}`;
+		state.tenants.delete(name);
+		state.associations.delete(name);
+
+		const result = await as(user, () => m.domains.addDomainAction(null, form({ domain: "first-domain.com" })));
+		assert.deepEqual(result, { ok: true, domain: "first-domain.com" });
+		assert.ok(state.tenants.has(name));
+		assert.ok(state.associations.get(name).has("identity/first-domain.com"));
+		assert.ok(state.identities.has("first-domain.com"));
+	});
+
+	test("RATE_LIMITS sets how many domains an account adds an hour", async () => {
+		const user = await customer("limited-domains@example.com", "limited-domains");
+		const add = (domain) => as(user, () => m.domains.addDomainAction(null, form({ domain })));
+		await withEnv({ RATE_LIMITS: "add_domain=2" }, async () => {
+			assert.equal((await add("limited-one.com")).ok, true);
+			assert.equal((await add("limited-two.com")).ok, true);
+			assert.deepEqual(await add("limited-three.com"), { error: "You can add a domain 2 times an hour. Try again later." });
+		});
+		assert.equal((await add("limited-three.com")).ok, true, "back to the default 10");
+	});
+
 	test("an admin can add the parent domain of the app's host, a customer can't, and the host stays the app's", async () => {
 		const admin = await customer("admin@example.com", "admin-news");
 		const user = await customer("parent-domain@example.com", "parent-domain");

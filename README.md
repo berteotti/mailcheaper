@@ -266,6 +266,7 @@ Set them in `.env` (one file per stage if they differ); Alchemy turns each into 
 | `ASSET_DOMAIN` | Optional | Optional | Serves uploaded images from the R2 bucket on this domain. Without it, the app serves them at `/media` |
 | `ADMIN_EMAILS` | Required | Optional | Comma-separated emails that can open `/admin`. On a self-hosted server they can also sign in |
 | `ALLOWED_EMAILS` | Optional | Not used | Who else can sign in to a self-hosted server: addresses and `@domain` entries, comma-separated |
+| `RATE_LIMITS` | Optional | Optional | An action's limit instead of its default, in the same window, per key and per account: `add_domain=50,send_test_email=100`. `/docs/authentication` lists the limits |
 | `EMAIL_FROM` | Required | Optional | From address of sign-in codes and alerts. MailCheap Cloud uses `MailCheap <hello@r.mailcheap.ai>` without it, with replies to `hello@mailcheap.ai` |
 | `RESEND_API_KEY` | Optional | Required | Sign-in codes and alerts through Resend. Self-hosted without it, they go through the email provider; MailCheap Cloud never does that and refuses to start without it |
 | `MAILCHEAP_CLOUD` | Unset | `true` | Turns on open sign-up, plans and Stripe billing. Only exactly `true` counts. |

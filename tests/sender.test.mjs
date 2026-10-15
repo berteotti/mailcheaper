@@ -180,12 +180,22 @@ test("the domains page lists every record with its status in words", () => {
 			{ purpose: "mail-from", type: "MX", name: "bounce.example.com", value: "10 feedback-smtp.us-east-1.amazonses.com" },
 		],
 	};
-	const steps = Object.fromEntries(getDomainSetup(domain, { cnameTarget: "cname.mailcheap.ai" }).map((step) => [step.key, step]));
+	const options = { cnameTarget: "cname.mailcheap.ai", appHost: "mailcheap.ai" };
+	const steps = Object.fromEntries(getDomainSetup(domain, options).map((step) => [step.key, step]));
 	assert.equal(steps.dkim.status.label, "Found");
 	assert.equal(steps["mail-from"].status.label, "Waiting for DNS");
 	assert.deepEqual(steps.archive.records, [{ type: "CNAME", name: "news.example.com", value: "cname.mailcheap.ai" }]);
+	assert.match(steps.archive.description, /^Add this CNAME record where you manage example\.com's DNS.*until then they stay on mailcheap\.ai\.$/);
 	assert.deepEqual(steps.dmarc.records, [{ type: "TXT", name: "_dmarc.example.com", value: "v=DMARC1; p=none;" }]);
-	assert.equal(getDomainSummary(domain).label, "Sending ready, archive waiting");
-	assert.equal(getDomainSummary({ ...domain, archiveHostVerified: true }).label, "Ready");
-	assert.equal(getDomainSummary({ ...domain, verified: false, dkimStatus: "FAILED" }).label, "Records not found");
+	assert.equal(getDomainSummary(domain, options).label, "Sending ready, archive waiting");
+	assert.equal(getDomainSummary({ ...domain, archiveHostVerified: true }, options).label, "Ready");
+	assert.equal(getDomainSummary({ ...domain, verified: false, dkimStatus: "FAILED" }, options).label, "Records not found");
+});
+
+test("without ARCHIVE_CNAME_TARGET, the archive step says it isn't available and a verified domain is ready", () => {
+	const domain = { domain: "example.com", archiveHost: "news.example.com", dkimStatus: "SUCCESS", mailFromStatus: "SUCCESS", verified: true, records: [] };
+	const archive = getDomainSetup(domain, { cnameTarget: null, appHost: "mail.example.org" }).find(({ key }) => key === "archive");
+	assert.deepEqual([archive.status.label, archive.records], ["Not available", []]);
+	assert.match(archive.description, /^Not available on this server: .* stay on mail\.example\.org\. Sending doesn't need it\./);
+	assert.equal(getDomainSummary(domain, { cnameTarget: null }).label, "Ready");
 });

@@ -70,6 +70,9 @@ export async function createTenant(name, { accountId }) {
 
 export async function associateTenantResources(tenantName, { identities = [], configurationSets = [] }) {
 	call("associateTenantResources", { tenantName, identities, configurationSets });
+	// Like SES: an identity it doesn't have can't be linked.
+	const unknown = identities.find((identity) => !state.identities.has(identity));
+	if (unknown) throw Object.assign(new Error(`Identity <${unknown}> does not exist`), { name: "NotFoundException" });
 	const set = state.associations.get(tenantName) ?? new Set();
 	for (const identity of identities) set.add(`identity/${identity}`);
 	for (const name of configurationSets) set.add(`configuration-set/${name}`);

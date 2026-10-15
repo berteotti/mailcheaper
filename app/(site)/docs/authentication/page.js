@@ -4,6 +4,7 @@ import HeaderDocs from "@/components/HeaderDocs";
 import { MAX_ACTIVE_API_KEYS } from "@/lib/actions/api-keys";
 import { SLUG_CHANGES } from "@/lib/actions/newsletters";
 import { ACTIONS } from "@/lib/actions/registry";
+import { getActionRateLimit } from "@/lib/actions/run-action";
 import { API_BASE_PATH, REQUESTS_PER_KEY } from "@/lib/api/rest";
 import { getAppUrl, isCloud } from "@/lib/config";
 import { getDocsPageMetadata } from "@/lib/docs/llms";
@@ -17,7 +18,7 @@ export const metadata = getDocsPageMetadata("/docs/authentication");
 
 export default function AuthenticationPage() {
 	const appUrl = getAppUrl();
-	const limited = ACTIONS.filter(({ rateLimit }) => rateLimit);
+	const limited = ACTIONS.filter(({ rateLimit }) => rateLimit).map((action) => ({ name: action.name, rateLimit: getActionRateLimit(action) }));
 	const signupsOnly = ACTIONS.filter(({ permission }) => permission === "signups");
 
 	return (

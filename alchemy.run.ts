@@ -49,6 +49,7 @@ export default Alchemy.Stack(
 			BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
 			ADMIN_EMAILS: Config.String("ADMIN_EMAILS"),
 			ALLOWED_EMAILS: optional("ALLOWED_EMAILS"),
+			RATE_LIMITS: optional("RATE_LIMITS"),
 			RESEND_API_KEY: optionalSecret("RESEND_API_KEY"),
 			EMAIL_FROM: optional("EMAIL_FROM"),
 			STRIPE_SECRET_KEY: optionalSecret("STRIPE_SECRET_KEY"),
