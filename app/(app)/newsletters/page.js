@@ -1,10 +1,12 @@
 import { redirect } from "next/navigation";
+import CardDeleteNewsletter from "@/components/CardDeleteNewsletter";
 import FormNewsletter from "@/components/FormNewsletter";
 import HeaderPage from "@/components/HeaderPage";
 import LayoutNarrow from "@/components/LayoutNarrow";
 import { cleanupTotalsQuery } from "@/lib/cleanup";
 import { getSharedDomain, isSendingEnabled } from "@/lib/config";
 import { getOne } from "@/lib/db";
+import { getNewsletterDeletionBlockers } from "@/lib/newsletter-deletion";
 import { ADD_NEWSLETTER_PATH } from "@/lib/newsletters";
 import { findAccountDomains } from "@/lib/sender";
 import { getSelectedNewsletter } from "@/lib/selected-newsletter";
@@ -17,10 +19,11 @@ export const metadata = { title: "Settings" };
 export default async function SettingsPage() {
 	const { user, account, selected } = await getSelectedNewsletter();
 	if (!selected) redirect(ADD_NEWSLETTER_PATH);
-	const [newsletter, domains, cleanupTotals] = await Promise.all([
+	const [newsletter, domains, cleanupTotals, deletionBlockers] = await Promise.all([
 		getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [account._id, selected._id]),
 		findAccountDomains(account._id),
 		getCleanupTotals(account, selected._id),
+		getNewsletterDeletionBlockers(account, selected),
 	]);
 
 	return (
@@ -34,6 +37,7 @@ export default async function SettingsPage() {
 				isSendingEnabled={isSendingEnabled()}
 				testEmail={user.email}
 				cleanupTotals={cleanupTotals}
+				footer={<CardDeleteNewsletter newsletter={newsletter} blockers={deletionBlockers} stagger={6} />}
 			/>
 		</LayoutNarrow>
 	);

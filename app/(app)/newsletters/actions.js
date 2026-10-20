@@ -71,6 +71,14 @@ export async function saveNewsletter(_state, formData) {
 	return { ok: true, savedAt: Date.now() };
 }
 
+// Delete newsletter's dialog, with the name its user typed. The dashboard opens the account's first newsletter next.
+export async function deleteNewsletter(id, confirmName) {
+	const { failure } = await runDashboardAction("delete_newsletter", { id: String(id ?? ""), confirmName: String(confirmName ?? "") });
+	if (failure) return toFormError(failure);
+	revalidatePath("/", "layout");
+	redirect("/");
+}
+
 // The newsletter menu. Which newsletter the dashboard shows is its own state, a cookie: no action of the API runs.
 export async function selectNewsletter(id, pathname) {
 	return switchNewsletter(id, pathname);

@@ -28,7 +28,8 @@ import { prefillWelcome } from "@/lib/welcome-content";
 const IMAGE_PREVIEW_PATTERN = /^(https:\/\/\S+\.\S{2,}\/\S+|\/\S+\.\w{3,4})$/;
 const LANGUAGE_OPTIONS = Object.entries(LANGUAGES).sort(([, a], [, b]) => a.localeCompare(b));
 
-export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testEmail, cleanupTotals }) {
+// footer: what goes after the sections, above the save bar.
+export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testEmail, cleanupTotals, footer }) {
 	const paywall = usePaywall();
 	const hasPlan = paywall?.hasPlan ?? true;
 	const archiveHost = domains.find(({ archiveHostVerified }) => archiveHostVerified)?.archiveHost;
@@ -479,6 +480,8 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 					/>
 				</Field>
 			</Section>
+
+			{footer}
 
 			<div
 				data-save-bar
