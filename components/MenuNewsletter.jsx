@@ -18,15 +18,15 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ADD_NEWSLETTER_PARAM, MAX_NEWSLETTERS_PER_ACCOUNT, NEWSLETTER_COOKIE, NEWSLETTER_LIMIT_MESSAGE } from "@/lib/newsletters";
+import { ADD_NEWSLETTER_PARAM, NEWSLETTER_COOKIE, NEWSLETTER_LIMIT_MESSAGE } from "@/lib/newsletters";
 import { cn } from "@/lib/utils";
 
 // The sidebar and the phone's top bar each have this menu: one refresh does for both.
 let refreshedFor = null;
 
 // The newsletter the dashboard shows, and the others to switch to. savedId: the cookie the layout was rendered from.
-// addForm: FormAddNewsletter, for Add a newsletter's dialog.
-export default function MenuNewsletter({ newsletters, selectedId, savedId, isCompact = false, addForm }) {
+// addForm: FormAddNewsletter, for Add a newsletter's dialog. isAtLimit: the account has all the newsletters it can.
+export default function MenuNewsletter({ newsletters, selectedId, savedId, isCompact = false, isAtLimit = false, addForm }) {
 	const router = useRouter();
 	const pathname = usePathname();
 	const searchParams = useSearchParams();
@@ -126,7 +126,7 @@ export default function MenuNewsletter({ newsletters, selectedId, savedId, isCom
 						))}
 					</DropdownMenuRadioGroup>
 					<DropdownMenuSeparator className="my-1.5" />
-					{newsletters.length < MAX_NEWSLETTERS_PER_ACCOUNT ? (
+					{!isAtLimit ? (
 						<DropdownMenuItem className={ITEM} onSelect={() => setAdding(true)}>
 							<Plus />
 							Add a newsletter

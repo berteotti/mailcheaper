@@ -240,6 +240,17 @@ describe("up to 3 newsletters", () => {
 	});
 });
 
+describe("an admin's account", () => {
+	test("has no newsletter limit, on the dashboard or through the API", async () => {
+		const admin = await signIn("admin@example.com");
+		await activate(admin);
+		for (const slug of ["admin-one", "admin-two", "admin-three", "admin-four"]) await createNewsletter(admin, slug);
+		const { key } = await as(admin, () => m.apiKeys.createApiKey(null, form({ name: "Agent", level: "full" })));
+		assert.equal((await api(key, "POST", "/newsletters", { name: "Five" })).status, 201);
+		assert.equal(await m.db.getValue("SELECT count(*) FROM newsletters WHERE accountId = ?", [admin.accountId]), 5);
+	});
+});
+
 describe("Add a newsletter's dialog", () => {
 	test("its action names it, takes the open newsletter's sender and postal address, opens it, then its settings", async () => {
 		const user = await signIn("short@example.com");
