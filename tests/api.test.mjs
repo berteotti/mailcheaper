@@ -405,6 +405,43 @@ describe("contacts", () => {
 		assert.equal((await m.exportRoute.GET(new Request(forged))).status, 401);
 	});
 
+	test("languages: on signup and import, changed one at a time, and filtered with the newsletter's for contacts without one", async () => {
+		const user = await customer("languages-api@example.com");
+		await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "fr" });
+		const signup = await api(user.signupsKey, "POST", "/contacts", { email: "ana@example.org", language: "pt-BR" });
+		assert.equal(signup.status, 201);
+		assertError(await api(user.signupsKey, "POST", "/contacts", { email: "kim@example.org", language: "klingon" }), 400, "validation_failed");
+		await api(user.key, "POST", "/contacts/import", {
+			consent: true,
+			contacts: [{ email: "jean@example.org" }, { email: "lena@example.org", language: "German" }, { email: "odd@example.org", language: "??" }],
+		});
+		assert.equal((await api(user.key, "GET", "/contacts/ana%40example.org")).body.language, "pt");
+		assert.equal((await api(user.key, "GET", "/contacts/jean%40example.org")).body.language, null);
+		assert.equal((await api(user.key, "GET", "/contacts/odd%40example.org")).body.language, null, "a language it can't read is left empty");
+
+		const emails = async (query) => (await api(user.key, "GET", `/contacts?${query}`)).body.contacts.map(({ email }) => email).sort();
+		assert.deepEqual(await emails("language=fr"), ["jean@example.org", "odd@example.org"], "the newsletter's language");
+		assert.deepEqual(await emails("language=de-AT"), ["lena@example.org"]);
+
+		const changed = await api(user.key, "PATCH", "/contacts/jean%40example.org/language", { language: "de" });
+		assert.equal(changed.body.language, "de");
+		assert.equal(changed.body.status, "active");
+		assert.deepEqual(await emails("language=de"), ["jean@example.org", "lena@example.org"]);
+		assert.equal((await api(user.key, "PATCH", "/contacts/jean%40example.org/language", { language: null })).body.language, null);
+		assertError(await api(user.key, "PATCH", "/contacts/jean%40example.org/language", { language: "xx" }), 400, "validation_failed");
+		assertError(await api(user.signupsKey, "PATCH", "/contacts/jean%40example.org/language", { language: "de" }), 403, "forbidden");
+
+		const exported = await api(user.key, "GET", "/contacts/export?language=pt");
+		assert.equal(exported.body.count, 1);
+		const lines = (await (await m.exportRoute.GET(new Request(exported.body.url))).text()).trim().split("\r\n");
+		const header = lines[0].split(",");
+		assert.deepEqual(lines.slice(1).map((line) => line.split(",")[header.indexOf("language")]), ["pt"]);
+
+		const lena = (await api(user.key, "GET", "/contacts/lena%40example.org")).body;
+		await as(user, () => m.contacts.setContactLanguage(lena.id, null));
+		assert.equal((await api(user.key, "GET", "/contacts/lena%40example.org")).body.language, null, "the dashboard's menu");
+	});
+
 	test("signups from a site send the welcome email and answer browsers", async () => {
 		const user = await customer("signups-api@example.com");
 		await api(user.key, "PATCH", `/newsletters/${user.slug}`, { welcome: { enabled: true, subject: "Welcome", markdown: "Thanks." } });
@@ -510,6 +547,19 @@ describe("newsletters and images", () => {
 		for (const name of ["Second", "Third"]) assert.equal((await api(user.key, "POST", "/newsletters", { name })).status, 201, name);
 		const fourth = assertError(await api(user.key, "POST", "/newsletters", { name: "Fourth" }), 409, "conflict");
 		assert.equal(fourth, "An account has up to 3 newsletters");
+	});
+
+	test("a newsletter is in English until it's given a language, which keeps only the base language", async () => {
+		const user = await customer("language-settings@example.com");
+		assert.equal((await api(user.key, "GET", `/newsletters/${user.slug}`)).body.language, "en");
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "pt-BR" })).body.language, "pt");
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { replyTo: "me@example.org" })).body.language, "pt", "a save that leaves it out keeps it");
+		assert.equal(assertError(await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "elvish" }), 400, "validation_failed"), "Language should be a code like en, fr or pt");
+		assert.equal((await api(user.key, "POST", "/newsletters", { name: "Notes", language: "Español" })).body.language, "es");
+		await as(user, () =>
+			m.newsletters.saveNewsletter(null, form({ id: user.newsletterId, name: `${user.slug} news`, slug: user.slug, postalAddress: "1 Main St, Paris", language: "de" }))
+		);
+		assert.equal((await api(user.key, "GET", `/newsletters/${user.slug}`)).body.language, "de", "the settings form");
 	});
 
 	test("a new newsletter starts with list cleanup on and the default numbers, unless it says false", async () => {

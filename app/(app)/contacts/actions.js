@@ -35,6 +35,13 @@ export async function setContactStatus(id, status) {
 	return failure ? toFormError(failure) : { ok: true };
 }
 
+// null: the newsletter's language applies again.
+export async function setContactLanguage(id, language) {
+	const { failure } = await runDashboardAction("update_contact_language", { id: String(id), language: language ?? null });
+	revalidatePath("/contacts");
+	return failure ? toFormError(failure) : { ok: true };
+}
+
 // A link to the CSV with the list's filters, valid for an hour.
 export async function exportContacts({ newsletterId, status, query } = {}) {
 	const { output, failure } = await runDashboardAction("export_contacts", {

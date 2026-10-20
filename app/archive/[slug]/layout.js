@@ -20,7 +20,8 @@ export default async function ArchiveLayout({ children, params }) {
 
 	return (
 		<ProviderSubscribe newsletter={pitch} readers={readers}>
-			<div className="flex min-h-dvh flex-col">
+			{/* The root layout's <html> is the dashboard's, in English. */}
+			<div lang={newsletter.language} className="flex min-h-dvh flex-col">
 				<HeaderArchive newsletter={newsletter} indexHref={index} />
 				<main className="flex-1">{children}</main>
 				<FooterArchive newsletter={newsletter} indexHref={index} />

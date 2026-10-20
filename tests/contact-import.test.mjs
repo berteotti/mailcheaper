@@ -31,6 +31,26 @@ test("imports preserve existing opt-outs and confirmation state, and only streng
 	assert.equal((await getOne("SELECT status FROM contacts WHERE email = ?", ["cold@example.com"], db)).status, "pending");
 });
 
+test("a file's language goes on new contacts and replaces an existing one's, and an empty cell clears nothing", async (t) => {
+	const db = database(t);
+	seedNewsletter(db);
+	const language = async (email) => (await getOne("SELECT language FROM contacts WHERE email = ?", [email], db)).language;
+	await importContactRows({ accountId, newsletterId, rows: [
+		{ email: "ana@example.com", status: "active", language: "pt-BR" },
+		{ email: "sam@example.com", status: "active" },
+	], db });
+	assert.equal(await language("ana@example.com"), "pt");
+	assert.equal(await language("sam@example.com"), null);
+	await importContactRows({ accountId, newsletterId, rows: [
+		{ email: "ana@example.com", status: "active" },
+		{ email: "sam@example.com", status: "unsubscribed", language: "fr" },
+	], db });
+	assert.equal(await language("ana@example.com"), "pt", "an empty cell keeps it");
+	assert.equal(await language("sam@example.com"), "fr");
+	await importContactRows({ accountId, newsletterId, rows: [{ email: "ana@example.com", status: "active", language: "Español" }], db });
+	assert.equal(await language("ana@example.com"), "es");
+});
+
 test("bounce and complaint imports suppress all newsletters and never downgrade a complaint", async (t) => {
 	const db = database(t);
 	seedNewsletter(db);

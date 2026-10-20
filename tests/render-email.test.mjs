@@ -20,6 +20,11 @@ test("markdown emails get a footer with the unsubscribe placeholder and address"
 	assert.ok(bytes > 0);
 });
 
+test("emails are marked as the newsletter's language, English without one", () => {
+	assert.match(renderEmail({ markdown: "Bonjour", newsletter: { ...newsletter, language: "fr" } }).html, /<html lang="fr">/);
+	assert.match(renderEmail({ markdown: "Hi", newsletter }).html, /<html lang="en">/);
+});
+
 test("per-recipient unsubscribe URLs replace the placeholder in text", () => {
 	const { html, text } = renderEmail({
 		markdown: "Hi",

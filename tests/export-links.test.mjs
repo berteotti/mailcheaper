@@ -15,8 +15,16 @@ test("an export link carries the account and filters, signed, for an hour", () =
 	const now = Date.parse("2026-10-12T10:00:00Z");
 	const { token, expiresAt } = createExportToken({ accountId: ACCOUNT, newsletterId: NEWSLETTER, status: "active", query: "jane" }, now);
 	assert.equal(expiresAt.getTime(), now + EXPORT_LINK_MS);
-	assert.deepEqual(verifyExportToken(token, now + 59 * 60_000), { accountId: ACCOUNT, newsletterId: NEWSLETTER, status: "active", query: "jane" });
+	assert.deepEqual(verifyExportToken(token, now + 59 * 60_000), {
+		accountId: ACCOUNT,
+		newsletterId: NEWSLETTER,
+		status: "active",
+		query: "jane",
+		language: null,
+	});
 	assert.equal(verifyExportToken(token, now + 61 * 60_000), null, "expired");
+	const french = createExportToken({ accountId: ACCOUNT, language: "fr" }, now).token;
+	assert.equal(verifyExportToken(french, now).language, "fr");
 
 	const [payload, signature] = token.split(".");
 	const widened = Buffer.from(JSON.stringify({ a: "6650f1c2e9b1d4a0123456aa", e: Math.floor(now / 1000) + 3600 })).toString("base64url");
@@ -48,7 +56,7 @@ test("CSV cells are quoted when needed and never start a formula, the email incl
 		stats: { sent: 3, opens: 2, clicks: 1 },
 	};
 	const row = toCsvRow(contact, new Map([[NEWSLETTER, "weekly"]]));
-	assert.equal(row, `'=cmd|'calc'!a1@example.com,active,weekly,"'=HYPERLINK(""http://x"",""click"")",2026-01-02T03:04:05.000Z,,,,,,3,2,1\r\n`);
+	assert.equal(row, `'=cmd|'calc'!a1@example.com,active,weekly,"'=HYPERLINK(""http://x"",""click"")",,2026-01-02T03:04:05.000Z,,,,,,3,2,1\r\n`);
 	assert.ok(!/^[=+\-@\t\r]/.test(row), "the email cell doesn't open a formula");
 	// A plain address is untouched, so an export still re-imports as it was.
 	assert.equal(toCsvRow({ email: "jane@example.com", status: "active" }).split(",")[0], "jane@example.com");
@@ -57,7 +65,17 @@ test("CSV cells are quoted when needed and never start a formula, the email incl
 test("the export's columns are the ones the import reads", () => {
 	const columns = mapColumns(getCsvHeader().trim().split(","));
 	assert.deepEqual(
-		{ email: columns.email, status: columns.status, subscribedAt: columns.subscribedAt, emailsReceived: columns.emailsReceived },
-		{ email: "email", status: "status", subscribedAt: "subscribed_at", emailsReceived: "emails_received" }
+		{
+			email: columns.email,
+			status: columns.status,
+			subscribedAt: columns.subscribedAt,
+			emailsReceived: columns.emailsReceived,
+			language: columns.language,
+		},
+		{ email: "email", status: "status", subscribedAt: "subscribed_at", emailsReceived: "emails_received", language: "language" }
 	);
+	// A contact in the newsletter's language exports an empty cell, which the import leaves empty.
+	const [, , , , language] = toCsvRow({ email: "jane@example.com", status: "active", language: null }).split(",");
+	assert.equal(language, "");
+	assert.equal(toCsvRow({ email: "jean@example.com", status: "active", language: "fr" }).split(",")[4], "fr");
 });
