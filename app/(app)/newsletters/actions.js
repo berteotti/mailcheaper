@@ -20,6 +20,7 @@ function readSettings(formData) {
 	return {
 		name: readText(formData, "name"),
 		slug: readText(formData, "slug"),
+		...(formData.has("language") && { language: readText(formData, "language") }),
 		imageUrl: readText(formData, "imageUrl"),
 		fromName: readText(formData, "fromName"),
 		fromEmail: readText(formData, "fromEmail"),

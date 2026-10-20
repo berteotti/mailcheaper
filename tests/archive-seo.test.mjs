@@ -111,3 +111,11 @@ test("the archive home shares a generated card and canonicalizes to its domain's
 	assert.equal(withoutDomain.alternates.canonical, "https://mailcheap.test/archive/field-notes");
 	assert.equal(withoutDomain.twitter.creator, undefined);
 });
+
+test("pages share in the newsletter's language", () => {
+	const french = { ...newsletter, language: "fr" };
+	assert.equal(getHomeSeo(french, APP).metadata.openGraph.locale, "fr_FR");
+	assert.equal(getIssueSeo(french, issue, APP).metadata.openGraph.locale, "fr_FR");
+	assert.equal(getAuthorSeo(french, APP).metadata.openGraph.locale, "fr_FR");
+	assert.equal(getHomeSeo(newsletter, APP).metadata.openGraph.locale, "en_US", "English without one");
+});

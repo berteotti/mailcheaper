@@ -20,6 +20,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MAX_IMPORT_ROWS_PER_REQUEST, mapColumns, normalizeImportRow } from "@/lib/csv-import";
 import { CONSENT_TEXT, DROP_REASONS, addDropped } from "@/lib/import-checks";
 import { formatNumber } from "@/lib/format";
+import { getLanguageName } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 
 // Into the newsletter the page shows.
@@ -58,6 +59,14 @@ export default function DialogImportContacts({ newsletter, label = "Import", var
 				status,
 				group.length,
 			]),
+		[rows],
+	);
+	// Rows without a language get the newsletter's.
+	const languageCounts = useMemo(
+		() =>
+			Object.entries(Object.groupBy(rows.filter(({ language }) => language), ({ language }) => language))
+				.map(([language, group]) => [language, group.length])
+				.sort(([, a], [, b]) => b - a),
 		[rows],
 	);
 
@@ -182,6 +191,14 @@ export default function DialogImportContacts({ newsletter, label = "Import", var
 										className="inline-flex h-6 items-center gap-1 rounded-full bg-muted px-2 text-xs text-muted-foreground tabular-nums"
 									>
 										{status} <span className="text-foreground">{formatNumber(count)}</span>
+									</span>
+								))}
+								{languageCounts.map(([language, count]) => (
+									<span
+										key={language}
+										className="inline-flex h-6 items-center gap-1 rounded-full px-2 text-xs text-muted-foreground tabular-nums shadow-border"
+									>
+										{getLanguageName(language)} <span className="text-foreground">{formatNumber(count)}</span>
 									</span>
 								))}
 							</div>

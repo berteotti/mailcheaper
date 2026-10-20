@@ -40,6 +40,7 @@ test("an empty D1 schema has all application tables and preserves model defaults
 	assert.equal(newsletter.requireConfirmation, 0);
 	assert.deepEqual(JSON.parse(newsletter.cleanup), { enabled: false });
 	assert.deepEqual(JSON.parse(newsletter.socialLinks), []);
+	assert.equal(newsletter.language, "en");
 	const campaign = db.prepare("SELECT * FROM campaigns").get();
 	assert.equal(campaign.status, "draft");
 	assert.equal(campaign.format, "rich");
@@ -53,6 +54,7 @@ test("an empty D1 schema has all application tables and preserves model defaults
 	assert.equal(contact.status, "active");
 	assert.equal(contact.subscribedAt, at);
 	assert.deepEqual(JSON.parse(contact.stats), { sent: 0, opens: 0, clicks: 0 });
+	assert.equal(contact.language, null, "the newsletter's applies");
 });
 
 test("contact uniqueness is per newsletter, suppressions are per account and archive slugs are global", (t) => {
@@ -97,10 +99,15 @@ test("IDs, normalization, enums, settings and relationships reject invalid write
 		"UPDATE contacts SET email = ' READER@example.com '",
 		"UPDATE contacts SET status = 'unknown'",
 		"UPDATE contacts SET ignoredIssues = -1",
+		"UPDATE contacts SET language = 'pt-BR'",
+		"UPDATE contacts SET language = 'EN'",
+		"UPDATE contacts SET language = ''",
 		"UPDATE contacts SET newsletterId = '000000000000000000000099'",
 		"UPDATE newsletters SET slug = 'Weekly'",
 		"UPDATE newsletters SET name = ' '",
 		"UPDATE newsletters SET archiveEnabled = 2",
+		"UPDATE newsletters SET language = NULL",
+		"UPDATE newsletters SET language = 'french'",
 		"UPDATE newsletters SET cleanup = '{\"issues\":0}'",
 		"UPDATE newsletters SET author = '[]'",
 		"UPDATE campaigns SET stats = 'invalid json'",

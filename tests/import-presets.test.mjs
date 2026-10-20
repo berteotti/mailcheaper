@@ -81,6 +81,7 @@ lea@example.com,Lea,2024-05-02,France,substack,4
 			emailsReceived: undefined,
 			openRate: undefined,
 			clickRate: undefined,
+			language: undefined,
 		});
 	});
 });

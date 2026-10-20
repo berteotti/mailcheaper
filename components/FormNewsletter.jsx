@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CLEANUP_LIMITS, LAST_CHANCE_DAYS, getCleanupSettings } from "@/lib/cleanup";
 import { CONFIRM_URL_PLACEHOLDER, getConfirmationContent } from "@/lib/confirmation-content";
 import { formatNumber } from "@/lib/format";
+import { DEFAULT_LANGUAGE, LANGUAGES } from "@/lib/languages";
 import { KEEP_URL_PLACEHOLDER, getLastChanceContent } from "@/lib/last-chance-content";
 import { MAX_AUTHOR_BIO_LENGTH, MAX_DESCRIPTION_LENGTH } from "@/lib/newsletters";
 import { UNSUBSCRIBE_PLACEHOLDER, renderEmail } from "@/lib/render-email";
@@ -25,6 +26,7 @@ import { cn } from "@/lib/utils";
 import { prefillWelcome } from "@/lib/welcome-content";
 
 const IMAGE_PREVIEW_PATTERN = /^(https:\/\/\S+\.\S{2,}\/\S+|\/\S+\.\w{3,4})$/;
+const LANGUAGE_OPTIONS = Object.entries(LANGUAGES).sort(([, a], [, b]) => a.localeCompare(b));
 
 export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testEmail, cleanupTotals }) {
 	const paywall = usePaywall();
@@ -164,6 +166,20 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 							setIsSlugEdited(true);
 						}}
 					/>
+				</Field>
+				<Field label="Language" hint="What it's written in. Contacts without a language of their own are in this one.">
+					<Select name="language" defaultValue={newsletter?.language ?? DEFAULT_LANGUAGE}>
+						<SelectTrigger className="h-9 w-full sm:w-56" aria-label="Language">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{LANGUAGE_OPTIONS.map(([code, name]) => (
+								<SelectItem key={code} value={code}>
+									{name}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
 				</Field>
 				<Field label="Image" hint="Square logo, 128×128 or larger">
 					<InputImage name="imageUrl" defaultValue={newsletter?.imageUrl} label="newsletter image" onChange={setImageUrl} />

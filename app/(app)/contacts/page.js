@@ -29,6 +29,7 @@ import { CONTACTS_PAGE_SIZE, findContactsPage } from "@/lib/contacts";
 import { getValue } from "@/lib/db";
 import { getAddContactCurl } from "@/lib/docs/reference";
 import { formatDate, formatNumber } from "@/lib/format";
+import { getLanguageName } from "@/lib/languages";
 import { toNewsletterOption } from "@/lib/newsletters";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { CONTACT_STATUSES } from "@/lib/statuses";
@@ -128,6 +129,7 @@ export default async function ContactsPage({ searchParams }) {
 								<TableRow className="hover:bg-transparent">
 									<TableHead className="pl-4">Email</TableHead>
 									<TableHead>Status</TableHead>
+									<TableHead className="hidden md:table-cell">Language</TableHead>
 									<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
 									<TableHead className="hidden text-right lg:table-cell">Clicks</TableHead>
 									<TableHead className="hidden text-right sm:table-cell">Added</TableHead>
@@ -150,6 +152,15 @@ export default async function ContactsPage({ searchParams }) {
 										<TableCell>
 											<BadgeStatus status={contact.status} />
 										</TableCell>
+										<TableCell className="hidden md:table-cell">
+											{contact.language ? (
+												getLanguageName(contact.language)
+											) : (
+												<span className="text-muted-foreground" title="The newsletter's language">
+													{getLanguageName(selected.language)}
+												</span>
+											)}
+										</TableCell>
 										<TableCell className="hidden text-right lg:table-cell">
 											{engagement(contact, "opens", "openRate")}
 										</TableCell>
@@ -160,7 +171,12 @@ export default async function ContactsPage({ searchParams }) {
 											{formatDate(contact.subscribedAt) ?? <TextEmpty />}
 										</TableCell>
 										<TableCell className="pr-2 text-right">
-											<MenuContact id={contact._id.toString()} status={contact.status} />
+											<MenuContact
+												id={contact._id.toString()}
+												status={contact.status}
+												language={contact.language ?? null}
+												newsletterLanguage={selected.language}
+											/>
 										</TableCell>
 									</TableRow>
 								))}
