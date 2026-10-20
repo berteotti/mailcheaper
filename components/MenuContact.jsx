@@ -17,9 +17,8 @@ import {
 	DropdownMenuSubTrigger,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { LANGUAGES, getLanguageName } from "@/lib/languages";
+import { LANGUAGE_OPTIONS, getLanguageName } from "@/lib/languages";
 
-const LANGUAGE_OPTIONS = Object.entries(LANGUAGES).sort(([, a], [, b]) => a.localeCompare(b));
 // Longer than any language code, so it can't be one.
 const NEWSLETTER_LANGUAGE = "newsletter";
 

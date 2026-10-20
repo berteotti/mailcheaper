@@ -117,5 +117,6 @@ test("pages share in the newsletter's language", () => {
 	assert.equal(getHomeSeo(french, APP).metadata.openGraph.locale, "fr_FR");
 	assert.equal(getIssueSeo(french, issue, APP).metadata.openGraph.locale, "fr_FR");
 	assert.equal(getAuthorSeo(french, APP).metadata.openGraph.locale, "fr_FR");
+	assert.equal(getHomeSeo({ ...newsletter, language: "en", languageRegion: "GB" }, APP).metadata.openGraph.locale, "en_GB");
 	assert.equal(getHomeSeo(newsletter, APP).metadata.openGraph.locale, "en_US", "English without one");
 });

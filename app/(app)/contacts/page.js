@@ -29,7 +29,7 @@ import { CONTACTS_PAGE_SIZE, findContactsPage } from "@/lib/contacts";
 import { getValue } from "@/lib/db";
 import { getAddContactCurl } from "@/lib/docs/reference";
 import { formatDate, formatNumber } from "@/lib/format";
-import { getLanguageName } from "@/lib/languages";
+import { getLanguageName, getLanguageTag } from "@/lib/languages";
 import { toNewsletterOption } from "@/lib/newsletters";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { CONTACT_STATUSES } from "@/lib/statuses";
@@ -154,10 +154,10 @@ export default async function ContactsPage({ searchParams }) {
 										</TableCell>
 										<TableCell className="hidden md:table-cell">
 											{contact.language ? (
-												getLanguageName(contact.language)
+												getLanguageName(getLanguageTag(contact))
 											) : (
 												<span className="text-muted-foreground" title="The newsletter's language">
-													{getLanguageName(selected.language)}
+													{getLanguageName(getLanguageTag(selected))}
 												</span>
 											)}
 										</TableCell>
@@ -174,8 +174,8 @@ export default async function ContactsPage({ searchParams }) {
 											<MenuContact
 												id={contact._id.toString()}
 												status={contact.status}
-												language={contact.language ?? null}
-												newsletterLanguage={selected.language}
+												language={getLanguageTag(contact)}
+												newsletterLanguage={getLanguageTag(selected)}
 											/>
 										</TableCell>
 									</TableRow>

@@ -415,7 +415,7 @@ describe("contacts", () => {
 			consent: true,
 			contacts: [{ email: "jean@example.org" }, { email: "lena@example.org", language: "German" }, { email: "odd@example.org", language: "??" }],
 		});
-		assert.equal((await api(user.key, "GET", "/contacts/ana%40example.org")).body.language, "pt");
+		assert.equal((await api(user.key, "GET", "/contacts/ana%40example.org")).body.language, "pt-BR");
 		assert.equal((await api(user.key, "GET", "/contacts/jean%40example.org")).body.language, null);
 		assert.equal((await api(user.key, "GET", "/contacts/odd%40example.org")).body.language, null, "a language it can't read is left empty");
 
@@ -431,11 +431,12 @@ describe("contacts", () => {
 		assertError(await api(user.key, "PATCH", "/contacts/jean%40example.org/language", { language: "xx" }), 400, "validation_failed");
 		assertError(await api(user.signupsKey, "PATCH", "/contacts/jean%40example.org/language", { language: "de" }), 403, "forbidden");
 
+		assert.deepEqual(await emails("language=pt-PT"), [], "a variant finds itself only");
 		const exported = await api(user.key, "GET", "/contacts/export?language=pt");
-		assert.equal(exported.body.count, 1);
+		assert.equal(exported.body.count, 1, "pt finds pt-BR");
 		const lines = (await (await m.exportRoute.GET(new Request(exported.body.url))).text()).trim().split("\r\n");
 		const header = lines[0].split(",");
-		assert.deepEqual(lines.slice(1).map((line) => line.split(",")[header.indexOf("language")]), ["pt"]);
+		assert.deepEqual(lines.slice(1).map((line) => line.split(",")[header.indexOf("language")]), ["pt-BR"]);
 
 		const lena = (await api(user.key, "GET", "/contacts/lena%40example.org")).body;
 		await as(user, () => m.contacts.setContactLanguage(lena.id, null));
@@ -549,12 +550,17 @@ describe("newsletters and images", () => {
 		assert.equal(fourth, "An account has up to 3 newsletters");
 	});
 
-	test("a newsletter is in English until it's given a language, which keeps only the base language", async () => {
+	test("a newsletter is in English until it's given a language, with the regions MailCheap tells apart", async () => {
 		const user = await customer("language-settings@example.com");
 		assert.equal((await api(user.key, "GET", `/newsletters/${user.slug}`)).body.language, "en");
-		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "pt-BR" })).body.language, "pt");
-		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { replyTo: "me@example.org" })).body.language, "pt", "a save that leaves it out keeps it");
-		assert.equal(assertError(await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "elvish" }), 400, "validation_failed"), "Language should be a code like en, fr or pt");
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "pt-BR" })).body.language, "pt-BR");
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { replyTo: "me@example.org" })).body.language, "pt-BR", "a save that leaves it out keeps it");
+		assert.equal(
+			await getValue("SELECT language || '-' || languageRegion FROM newsletters WHERE accountId = ? AND slug = ?", [user.accountId, user.slug]),
+			"pt-BR"
+		);
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "pt-AO" })).body.language, "pt", "a region it doesn't tell apart");
+		assert.equal(assertError(await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "elvish" }), 400, "validation_failed"), "Language should be a code like en, fr or pt-BR");
 		assert.equal((await api(user.key, "POST", "/newsletters", { name: "Notes", language: "Español" })).body.language, "es");
 		await as(user, () =>
 			m.newsletters.saveNewsletter(null, form({ id: user.newsletterId, name: `${user.slug} news`, slug: user.slug, postalAddress: "1 Main St, Paris", language: "de" }))

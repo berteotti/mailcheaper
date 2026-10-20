@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { accountId, database, newsletterId, seedAccount, seedNewsletter } from "./helpers/d1.mjs";
 const { importContactRows } = await import("../lib/contact-import.js");
 const { getOne } = await import("../lib/db.js");
+const { getLanguageTag } = await import("../lib/languages.js");
 
 test("imports preserve existing opt-outs and confirmation state, and only strengthen status", async (t) => {
 	const db = database(t);
@@ -34,21 +35,21 @@ test("imports preserve existing opt-outs and confirmation state, and only streng
 test("a file's language goes on new contacts and replaces an existing one's, and an empty cell clears nothing", async (t) => {
 	const db = database(t);
 	seedNewsletter(db);
-	const language = async (email) => (await getOne("SELECT language FROM contacts WHERE email = ?", [email], db)).language;
+	const language = async (email) => getLanguageTag(await getOne("SELECT language, languageRegion FROM contacts WHERE email = ?", [email], db));
 	await importContactRows({ accountId, newsletterId, rows: [
 		{ email: "ana@example.com", status: "active", language: "pt-BR" },
 		{ email: "sam@example.com", status: "active" },
 	], db });
-	assert.equal(await language("ana@example.com"), "pt");
+	assert.equal(await language("ana@example.com"), "pt-BR");
 	assert.equal(await language("sam@example.com"), null);
 	await importContactRows({ accountId, newsletterId, rows: [
 		{ email: "ana@example.com", status: "active" },
 		{ email: "sam@example.com", status: "unsubscribed", language: "fr" },
 	], db });
-	assert.equal(await language("ana@example.com"), "pt", "an empty cell keeps it");
+	assert.equal(await language("ana@example.com"), "pt-BR", "an empty cell keeps it");
 	assert.equal(await language("sam@example.com"), "fr");
 	await importContactRows({ accountId, newsletterId, rows: [{ email: "ana@example.com", status: "active", language: "Español" }], db });
-	assert.equal(await language("ana@example.com"), "es");
+	assert.equal(await language("ana@example.com"), "es", "the region goes with the language it replaces");
 });
 
 test("bounce and complaint imports suppress all newsletters and never downgrade a complaint", async (t) => {

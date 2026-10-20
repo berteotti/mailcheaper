@@ -61,17 +61,18 @@ test("normalizes a row and applies a stricter status override only", () => {
 	assert.equal(normalizeImportRow({ email: "not-an-email" }, columns), null);
 });
 
-test("reads a language column as a base language, and leaves one it can't read empty", () => {
+test("reads a language column, with the regions MailCheap tells apart, and leaves one it can't read empty", () => {
 	for (const header of ["Language", "lang", "Locale", "Preferred language"]) {
 		assert.equal(mapColumns(["Email", header]).language, header);
 	}
 	const columns = mapColumns(["email", "locale"]);
-	assert.equal(normalizeImportRow({ email: "ana@example.com", locale: "pt_BR" }, columns).language, "pt");
+	assert.equal(normalizeImportRow({ email: "ana@example.com", locale: "pt_BR" }, columns).language, "pt-BR");
+	assert.equal(normalizeImportRow({ email: "rui@example.com", locale: "pt_AO" }, columns).language, "pt");
 	assert.equal(normalizeImportRow({ email: "jean@example.com", locale: "Français" }, columns).language, "fr");
 	const unknown = normalizeImportRow({ email: "sam@example.com", locale: "Klingon" }, columns);
 	assert.equal(unknown.email, "sam@example.com", "the row still goes in");
 	assert.equal(unknown.language, undefined);
-	assert.equal(sanitizeImportRow({ email: "ana@example.com", status: "active", language: "pt-BR" }).language, "pt");
+	assert.equal(sanitizeImportRow({ email: "ana@example.com", status: "active", language: "pt-BR" }).language, "pt-BR");
 	assert.equal(sanitizeImportRow({ email: "ana@example.com", status: "active", language: "<b>" }).language, undefined);
 });
 

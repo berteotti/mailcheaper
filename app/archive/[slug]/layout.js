@@ -4,6 +4,7 @@ import HeaderArchive from "@/components/HeaderArchive";
 import ProviderSubscribe from "@/components/ProviderSubscribe";
 import { countReaders, getArchiveNewsletter } from "@/lib/archive-data";
 import { getArchiveUrls } from "@/lib/archive-hosts";
+import { getLanguageTag } from "@/lib/languages";
 
 export default async function ArchiveLayout({ children, params }) {
 	const newsletter = await getArchiveNewsletter((await params).slug);
@@ -21,7 +22,7 @@ export default async function ArchiveLayout({ children, params }) {
 	return (
 		<ProviderSubscribe newsletter={pitch} readers={readers}>
 			{/* The root layout's <html> is the dashboard's, in English. */}
-			<div lang={newsletter.language} className="flex min-h-dvh flex-col">
+			<div lang={getLanguageTag(newsletter)} className="flex min-h-dvh flex-col">
 				<HeaderArchive newsletter={newsletter} indexHref={index} />
 				<main className="flex-1">{children}</main>
 				<FooterArchive newsletter={newsletter} indexHref={index} />
