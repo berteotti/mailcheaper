@@ -3,13 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { runDashboardAction, toFormError } from "@/lib/actions/dashboard";
 
-export async function importContacts({ newsletterId, rows, consent, importId, duplicates }) {
+// languages: the ones the dialog keeps, when it leaves some out.
+export async function importContacts({ newsletterId, rows, consent, importId, duplicates, languages }) {
 	const { output, failure } = await runDashboardAction("import_contacts", {
 		newsletter: String(newsletterId ?? ""),
 		contacts: Array.isArray(rows) ? rows : [],
 		consent: consent === true,
 		...(importId && { importId: String(importId) }),
 		...(duplicates && { duplicates }),
+		...(Array.isArray(languages) && { languages: languages.map(String) }),
 	});
 	if (failure) return toFormError(failure);
 	revalidatePath("/contacts");

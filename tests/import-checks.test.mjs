@@ -71,7 +71,27 @@ test("rows are checked once each, and past unsubscribes always go in", () => {
 		{ email: "len@hotmial.com", status: "unsubscribed" },
 	]);
 	assert.deepEqual(contacts.map(({ email }) => email), ["jane@acme.com", "sales@other.com", "len@hotmial.com"]);
-	assert.deepEqual(dropped, { invalid: 1, typo: 1, trap: 1, role: 1, disposable: 1, duplicate: 1, suppressed: 0, noMail: 0 });
+	assert.deepEqual(dropped, { invalid: 1, typo: 1, trap: 1, role: 1, disposable: 1, duplicate: 1, suppressed: 0, noMail: 0, language: 0 });
+});
+
+test("a language filter leaves out rows that would get emails in other languages, and only lets their opt-outs reach existing contacts", () => {
+	const { contacts, dropped } = checkImportRows(
+		[
+			{ email: "ana@acme.com", status: "active", language: "fr" },
+			{ email: "ben@acme.com", status: "active" },
+			{ email: "cy@acme.com", status: "active", language: "de" },
+			{ email: "info@acme.com", status: "active", language: "fr" },
+			{ email: "sales@acme.com", status: "active", language: "de" },
+			{ email: "dee@acme.com", status: "unsubscribed", language: "de" },
+		],
+		{ languages: new Set(["fr", "none"]) }
+	);
+	assert.deepEqual(
+		contacts.map(({ email, onlyExisting }) => [email, Boolean(onlyExisting)]),
+		[["ana@acme.com", false], ["ben@acme.com", false], ["dee@acme.com", true]]
+	);
+	assert.equal(dropped.language, 2, "a role address in another language counts once, for its language");
+	assert.equal(dropped.role, 1);
 });
 
 describe("contact imports", () => {
@@ -128,7 +148,7 @@ describe("contact imports", () => {
 			})
 		);
 		assert.equal(first.created, 1);
-		assert.deepEqual(first.dropped, { invalid: 1, typo: 0, trap: 0, role: 1, disposable: 1, duplicate: 3, suppressed: 1, noMail: 0 });
+		assert.deepEqual(first.dropped, { invalid: 1, typo: 0, trap: 0, role: 1, disposable: 1, duplicate: 3, suppressed: 1, noMail: 0, language: 0 });
 
 		const second = await as(user, () =>
 			m.contacts.importContacts({
@@ -149,12 +169,40 @@ describe("contact imports", () => {
 		assert.ok(stored.consentAt instanceof Date);
 		assert.equal(stored.userId, user.userId);
 		assert.deepEqual({ rows: stored.rows, created: stored.created, existing: stored.existing }, { rows: 8, created: 2, existing: 1 });
-		assert.deepEqual(stored.dropped, { invalid: 1, typo: 0, trap: 0, role: 1, disposable: 1, duplicate: 3, suppressed: 1, noMail: 0 });
+		assert.deepEqual(stored.dropped, { invalid: 1, typo: 0, trap: 0, role: 1, disposable: 1, duplicate: 3, suppressed: 1, noMail: 0, language: 0 });
 
 		const cat = await findContact("cat@example.org");
 		assert.equal(cat.importId, first.importId);
 		assert.equal(await findContact("admin@example.org"), null);
 		assert.equal(await findContact("bounced@example.org"), null);
+	});
+
+	test("an import filtered by language adds only the languages kept; opt-outs in the others still reach contacts already there", async () => {
+		const run = (rows, languages) => as(user, () => m.contacts.importContacts({ newsletterId: user.newsletterId, consent: true, rows, languages }));
+		await run([{ email: "eng@example.org", status: "active", language: "en" }]);
+		const result = await run(
+			[
+				{ email: "fra@example.org", status: "active", language: "fr" },
+				{ email: "nolang@example.org", status: "active" },
+				{ email: "deu@example.org", status: "active", language: "de" },
+				{ email: "eng@example.org", status: "unsubscribed", language: "en" },
+				{ email: "esp@example.org", status: "unsubscribed", language: "es" },
+				{ email: "ita@example.org", status: "complained", language: "it" },
+			],
+			["fr", "none"]
+		);
+		assert.deepEqual({ created: result.created, existing: result.existing, language: result.dropped.language }, { created: 2, existing: 1, language: 3 });
+		assert.equal((await findContact("fra@example.org")).language, "fr");
+		assert.equal((await findContact("nolang@example.org")).language, null);
+		assert.equal((await findContact("eng@example.org")).status, "unsubscribed", "an opt-out always reaches an existing contact");
+		for (const email of ["deu@example.org", "esp@example.org", "ita@example.org"]) assert.equal(await findContact(email), null, email);
+		assert.equal((await getOne("SELECT reason FROM suppressions WHERE accountId = ? AND email = ?", [user.accountId, "ita@example.org"])).reason, "complaint");
+		assert.equal((await findImport(result.importId)).dropped.language, 3);
+
+		const refused = await run([{ email: "gil@example.org", status: "active", language: "fr" }], ["elvish"]);
+		assert.match(refused.error, /^language: /);
+		assert.ok((await run([{ email: "gil@example.org", status: "active" }], [])).error, "nothing kept is refused, not everything added");
+		assert.equal(await findContact("gil@example.org"), null);
 	});
 
 	test("an import id from another account or newsletter is refused", async () => {
