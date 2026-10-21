@@ -5,6 +5,7 @@ import {
 	LANGUAGE_VARIANTS,
 	getLanguageName,
 	getLanguageTag,
+	matchLanguage,
 	normalizeLanguage,
 	splitLanguage,
 	toOpenGraphLocale,
@@ -78,4 +79,15 @@ test("og:locale gets the territory most of the language's readers live in", () =
 	assert.equal(toOpenGraphLocale("en-GB"), "en_GB");
 	assert.equal(toOpenGraphLocale("pt-PT"), "pt_PT");
 	assert.equal(toOpenGraphLocale(undefined), "en_US");
+});
+
+test("a reader gets their own tag, else their language, else another variant of it, else nothing", () => {
+	const tags = ["en", "pt-BR", "pt-PT", "es-419"];
+	assert.equal(matchLanguage("pt-PT", tags), "pt-PT");
+	assert.equal(matchLanguage("en-GB", tags), "en", "the language itself first");
+	assert.equal(matchLanguage("pt", tags), "pt-BR", "the first variant given");
+	assert.equal(matchLanguage("es-ES", tags), "es-419");
+	assert.equal(matchLanguage("fr", tags), null);
+	assert.equal(matchLanguage("pt-BR", ["pt", "pt-BR"]), "pt-BR");
+	assert.equal(matchLanguage("pt-BR", ["pt-PT", "pt"]), "pt");
 });

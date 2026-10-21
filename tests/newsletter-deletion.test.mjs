@@ -30,17 +30,19 @@ function api(key, method, path, body) {
 	return callApi(method, `/api/v1${path}`, { key, body });
 }
 
-// A sent issue with one recipient and its delivery event, sent daysAgo.
+// A sent issue with one recipient, who got its French edition, and its delivery event, sent daysAgo.
 async function sentIssue(user, newsletterId, { daysAgo, kind = "campaign", email = "reader@example.org" }) {
 	const sentAt = new Date(Date.now() - daysAgo * DAY_MS);
 	const contact =
 		(await getOne("SELECT * FROM contacts WHERE accountId = ? AND newsletterId = ? AND email = ?", [user.accountId, newsletterId, email])) ??
 		(await insertRow("contacts", { accountId: user.accountId, newsletterId, email, subscribedAt: sentAt }));
 	const campaign = await insertRow("campaigns", { accountId: user.accountId, newsletterId, subject: "Issue", status: "sent", sentAt });
+	const edition = await insertRow("campaign_editions", { accountId: user.accountId, campaignId: campaign._id, language: "fr", subject: "Numéro" });
 	const message = await insertRow("messages", {
 		accountId: user.accountId,
 		kind,
 		campaignId: kind === "campaign" ? campaign._id : null,
+		editionId: kind === "campaign" ? edition._id : null,
 		newsletterId,
 		contactId: contact._id,
 		email,
@@ -93,6 +95,7 @@ describe("deleting a newsletter", () => {
 			assert.ok((await countRows(table, kept)) > 0, `${table} of the other newsletter`);
 		}
 		assert.equal(await getValue("SELECT count(*) FROM events WHERE accountId = ?", [user.accountId]), 1, "the other newsletter's event");
+		assert.equal(await getValue("SELECT count(*) FROM campaign_editions WHERE accountId = ?", [user.accountId]), 1, "the other newsletter's edition");
 		assert.equal(
 			(await getOne("SELECT reason FROM suppressions WHERE accountId = ? AND email = ?", [user.accountId, "gone@example.org"])).reason,
 			"bounce",

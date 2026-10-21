@@ -228,6 +228,60 @@ test("suppressed or unsubscribed contacts are skipped at send time", async (t) =
 	assert.deepEqual(await statuses(), ["sent:1", "suppressed:2"]);
 });
 
+test("each contact gets the edition in their language, and contacts in a language it has nothing in the newsletter's", async (t) => {
+	const { db, queue } = setup(t, { contacts: 7 });
+	const setLanguage = db.sqlite.prepare("UPDATE contacts SET language = ?, languageRegion = ? WHERE email = ?");
+	// reader0 has none and reads the newsletter's English.
+	for (const [index, language, region] of [[1, "en", "GB"], [2, "pt", "BR"], [3, "pt", null], [4, "pt", "PT"], [5, "de", null], [6, "fr", null]]) {
+		setLanguage.run(language, region, `reader${index}@example.com`);
+	}
+	const insertEdition = db.sqlite.prepare(`INSERT INTO campaign_editions (_id, accountId, campaignId, language, languageRegion, subject, html, createdAt, updatedAt)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+	insertEdition.run("e0000000000000000000000a", accountId, campaignId, "pt", "BR", "Olá", "<p>Oi, tudo bem?</p>", at, at);
+	insertEdition.run("e0000000000000000000000b", accountId, campaignId, "fr", null, "", "<p>Salut</p>", at, at);
+
+	await assert.rejects(queueCampaign({ accountId, campaignId }), { code: "send_check_failed", message: "French edition: add a subject" });
+	await getAll("DELETE FROM campaign_editions WHERE language = 'fr'");
+
+	const { recipients: count } = await queueCampaign({ accountId, campaignId });
+	assert.equal(count, 7);
+	await runQueue(queue);
+	const subjects = Object.fromEntries(sesSent.map(({ to, subject }) => [to, subject]));
+	assert.deepEqual(subjects, {
+		"reader0@example.com": "Hello",
+		"reader1@example.com": "Hello",
+		"reader2@example.com": "Olá",
+		"reader3@example.com": "Olá",
+		"reader4@example.com": "Olá",
+		"reader5@example.com": "Hello",
+		"reader6@example.com": "Hello",
+	});
+	const portuguese = sesSent.find(({ to }) => to === "reader2@example.com");
+	assert.match(portuguese.html, /Oi, tudo bem\?/);
+	assert.match(portuguese.html, /<html lang="pt-BR">/);
+	const editionIds = await getAll("SELECT email, editionId FROM messages ORDER BY email");
+	assert.deepEqual(editionIds.filter(({ editionId }) => editionId).map(({ email }) => email), ["reader2@example.com", "reader3@example.com", "reader4@example.com"]);
+	const done = await campaign();
+	assert.equal(done.status, "sent");
+	assert.deepEqual([done.language, done.languageRegion], ["en", null], "the send pins the newsletter's language");
+	await assert.rejects(getAll("DELETE FROM campaign_editions"), /FOREIGN KEY/, "a sent edition stays");
+});
+
+test("a campaign with nothing in its newsletter's language goes to its own languages' readers only", async (t) => {
+	const { db, queue } = setup(t, { contacts: 3 });
+	db.sqlite.prepare("UPDATE contacts SET language = 'pt' WHERE email = 'reader1@example.com'").run();
+	db.sqlite.prepare("UPDATE campaigns SET language = 'pt', languageRegion = 'BR'").run();
+	await queueCampaign({ accountId, campaignId });
+	await runQueue(queue);
+	assert.deepEqual(recipients(), ["reader1@example.com"]);
+	assert.match(sesSent[0].html, /<html lang="pt-BR">/);
+
+	db.sqlite.prepare("UPDATE contacts SET status = 'unsubscribed' WHERE email = 'reader1@example.com'").run();
+	db.sqlite.prepare(`INSERT INTO campaigns (_id, accountId, newsletterId, subject, html, language, createdAt, updatedAt)
+		VALUES ('c0000000000000000000000b', ?, ?, 'Olá', '<p>Oi</p>', 'pt', ?, ?)`).run(accountId, newsletterId, at, at);
+	await assert.rejects(queueCampaign({ accountId, campaignId: "c0000000000000000000000b" }), { code: "no_recipients" });
+});
+
 test("a first send goes in steps: the slice, then the rest once its check passes", async (t) => {
 	const { db, queue } = setup(t, { contacts: 50 });
 	addContacts(db, 450, { from: 50, neverMailed: true });

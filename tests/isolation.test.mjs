@@ -6,7 +6,8 @@ import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTes
 import { flushAfter } from "./stubs/next-server.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
 
-// Bob builds a newsletter with contacts, a campaign, an API key and an upload through his own actions.
+// Bob builds a newsletter with contacts, a campaign with a French edition, an API key and an upload through his own
+// actions.
 // Alice, signed in to her own paid account, then tries to reach each of them every way the app offers.
 let app;
 let alice;
@@ -47,14 +48,15 @@ async function upload(user) {
 }
 
 async function snapshot() {
-	const [newsletter, campaign, contacts, apiKey, uploads] = await Promise.all([
+	const [newsletter, campaign, editions, contacts, apiKey, uploads] = await Promise.all([
 		getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [bob.accountId, bobData.newsletterId]),
 		getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [bob.accountId, bobData.campaignId]),
+		getAll("SELECT * FROM campaign_editions WHERE accountId = ? ORDER BY language", [bob.accountId]),
 		getAll("SELECT * FROM contacts WHERE accountId = ? ORDER BY email", [bob.accountId]),
 		getOne("SELECT * FROM api_keys WHERE accountId = ?", [bob.accountId]),
 		getAll("SELECT * FROM uploads WHERE accountId = ?", [bob.accountId]),
 	]);
-	return JSON.parse(JSON.stringify({ newsletter, campaign, contacts, apiKey, uploads }));
+	return JSON.parse(JSON.stringify({ newsletter, campaign, editions, contacts, apiKey, uploads }));
 }
 
 before(async () => {
@@ -90,6 +92,10 @@ before(async () => {
 	);
 	assert.equal(imported.created, 3);
 	const campaignId = await createCampaign(bob, newsletterId, "Bob's issue");
+	assert.deepEqual(
+		await as(bob, () => m.campaigns.saveCampaignEdition(campaignId, "fr", { subject: "Le numéro de Bob", previewText: "", body: "<p>Bonjour</p>" })),
+		{ ok: true }
+	);
 	const { key: apiKey } = await as(bob, () => m.apiKeys.createApiKey(null, form({ name: "Bob's site" })));
 	const uploaded = await upload(bob);
 	assert.equal(uploaded.status, 200);
@@ -151,6 +157,11 @@ describe("server actions refuse another account's data", () => {
 		const attempts = {
 			saveCampaign: () => m.campaigns.saveCampaign(id, { subject: "Hacked", previewText: "", body: "<p>x</p>" }),
 			sendTestCampaign: () => m.campaigns.sendTestCampaign(id),
+			sendTestEdition: () => m.campaigns.sendTestCampaign(id, "fr"),
+			saveCampaignEdition: () => m.campaigns.saveCampaignEdition(id, "fr", { subject: "Piraté", previewText: "", body: "<p>x</p>" }),
+			addCampaignEdition: () => m.campaigns.addCampaignEdition(id, "de"),
+			deleteCampaignEdition: () => m.campaigns.deleteCampaignEdition(id, "fr"),
+			setCampaignLanguage: () => m.campaigns.setCampaignLanguage(id, "es"),
 			sendCampaign: () => m.campaigns.sendCampaign(id, {}),
 			scheduleCampaign: () => m.campaigns.scheduleCampaign(id, { scheduledAt: new Date(Date.now() + 86_400_000).toISOString() }),
 			unscheduleCampaign: () => m.campaigns.unscheduleCampaign(id),
@@ -170,6 +181,7 @@ describe("server actions refuse another account's data", () => {
 		}
 		assert.equal(sesEmails.length, emailsBefore, "no test email went out");
 		assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [alice.accountId]), 0, "no copy landed in Alice's account");
+		assert.equal(await getValue("SELECT count(*) FROM campaign_editions WHERE accountId = ?", [alice.accountId]), 0);
 		assert.deepEqual(await snapshot(), before);
 	});
 
@@ -265,6 +277,13 @@ describe("API routes stay inside the key's account", () => {
 		});
 		assert.equal(draft.status, 404);
 		assert.equal(await getValue("SELECT count(*) FROM campaigns WHERE accountId = ?", [bob.accountId]), 1);
+
+		const before = await snapshot();
+		const path = `/api/v1/campaigns/${bobData.campaignId}/editions/fr`;
+		assert.equal((await callApi("PATCH", path, { key: alice.apiKey, body: { subject: "Piraté" } })).status, 404);
+		assert.equal((await callApi("DELETE", path, { key: alice.apiKey })).status, 404);
+		assert.equal((await callApi("GET", `/api/v1/campaigns/${bobData.campaignId}`, { key: alice.apiKey })).status, 404);
+		assert.deepEqual(await snapshot(), before);
 	});
 
 	test("an unknown or revoked key gets 401", async () => {

@@ -34,7 +34,7 @@ test("an empty D1 schema has all application tables and preserves model defaults
 	const db = database(t);
 	const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map(({ name }) => name);
 	assert.equal(
-		["accounts", "account_secrets", "alerts", "api_keys", "campaigns", "contact_imports", "contacts", "deletion_records", "domains", "events", "job_outbox", "messages", "newsletters", "suppressions", "uploads"].every((name) => tables.includes(name)), true);
+		["accounts", "account_secrets", "alerts", "api_keys", "campaign_editions", "campaigns", "contact_imports", "contacts", "deletion_records", "domains", "events", "job_outbox", "messages", "newsletters", "suppressions", "uploads"].every((name) => tables.includes(name)), true);
 	const newsletter = db.prepare("SELECT * FROM newsletters").get();
 	assert.equal(newsletter.archiveEnabled, 0);
 	assert.equal(newsletter.requireConfirmation, 0);
@@ -50,6 +50,7 @@ test("an empty D1 schema has all application tables and preserves model defaults
 	assert.equal(campaign.scheduledAt, null);
 	assert.equal(JSON.parse(campaign.stats).unsubscribed, 0);
 	assert.equal(JSON.parse(campaign.lastChance).dormant, 0);
+	assert.equal(campaign.language, null, "the newsletter's applies");
 	const contact = db.prepare("SELECT * FROM contacts").get();
 	assert.equal(contact.status, "active");
 	assert.equal(contact.subscribedAt, at);

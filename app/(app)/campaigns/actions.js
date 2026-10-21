@@ -38,8 +38,50 @@ export async function saveCampaign(id, values) {
 	return { ok: true };
 }
 
-export async function sendTestCampaign(id) {
-	const { failure } = await runDashboardAction("send_test_email", { id: String(id) });
+// The campaign's own language, or one of its editions.
+export async function saveCampaignEdition(id, language, values) {
+	const { failure } = await runDashboardAction("set_campaign_edition", {
+		id: String(id),
+		language: String(language ?? ""),
+		subject: String(values?.subject ?? "").slice(0, MAX_SUBJECT_LENGTH),
+		previewText: String(values?.previewText ?? "").slice(0, MAX_PREVIEW_TEXT_LENGTH),
+		content: String(values?.body ?? ""),
+		...(values?.format && { format: values.format }),
+	});
+	if (failure) return toFormError(failure);
+	return { ok: true };
+}
+
+// The send dialogs count who gets which language, so adding or deleting an edition reloads the page.
+export async function addCampaignEdition(id, language) {
+	const { failure } = await runDashboardAction("set_campaign_edition", {
+		id: String(id),
+		language: String(language ?? ""),
+		format: "rich",
+		content: "",
+	});
+	if (failure) return toFormError(failure);
+	refresh(id);
+	return { ok: true };
+}
+
+export async function deleteCampaignEdition(id, language) {
+	const { failure } = await runDashboardAction("delete_campaign_edition", { id: String(id), language: String(language ?? "") });
+	if (failure) return toFormError(failure);
+	refresh(id);
+	return { ok: true };
+}
+
+// null: the newsletter's.
+export async function setCampaignLanguage(id, language) {
+	const { failure } = await runDashboardAction("update_campaign", { id: String(id), language: language ? String(language) : null });
+	if (failure) return toFormError(failure);
+	refresh(id);
+	return { ok: true };
+}
+
+export async function sendTestCampaign(id, language) {
+	const { failure } = await runDashboardAction("send_test_email", { id: String(id), ...(language && { language: String(language) }) });
 	revalidatePath(`/campaigns/${id}`);
 	return failure ? toFormError(failure) : { ok: true };
 }

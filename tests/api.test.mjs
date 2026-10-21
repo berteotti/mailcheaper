@@ -338,6 +338,70 @@ describe("sending through the API", () => {
 		assert.equal(report.body.rates.delivered, 0, "no delivery events yet");
 	});
 
+	test("a campaign in several languages: each contact gets the edition in theirs or the newsletter's, and the report counts each language", async () => {
+		const user = await customer("editions-api@example.com");
+		const contacts = [
+			{ email: `en@${user.slug}.example.org` },
+			{ email: `br@${user.slug}.example.org`, language: "pt-BR" },
+			{ email: `de@${user.slug}.example.org`, language: "de" },
+		];
+		assert.equal((await api(user.key, "POST", "/contacts/import", { consent: true, contacts })).status, 200);
+		const issue = { subject: "This week", content: "Three links." };
+		assertError(await api(user.key, "POST", "/campaigns", { ...issue, editions: [{ language: "en", subject: "Hi" }] }), 400, "validation_failed");
+		assertError(await api(user.key, "POST", "/campaigns", { ...issue, editions: [{ language: "klingon" }] }), 400, "validation_failed");
+
+		const created = await api(user.key, "POST", "/campaigns", {
+			...issue,
+			editions: [{ language: "pt_BR", subject: "Esta semana", content: "Três links." }],
+		});
+		assert.equal(created.status, 201);
+		const { id } = created.body;
+		assert.equal(created.body.language, "en", "the newsletter's");
+		assert.deepEqual(created.body.editions.map(({ language, subject, format }) => [language, subject, format]), [["pt-BR", "Esta semana", "markdown"]]);
+		assert.deepEqual(created.body.audience, [
+			{ language: "de", contacts: 1, edition: "en" },
+			{ language: "en", contacts: 1, edition: "en" },
+			{ language: "pt-BR", contacts: 1, edition: "pt-BR" },
+		]);
+		assert.deepEqual([created.body.activeContacts, created.body.audienceContacts], [3, 3]);
+
+		assert.deepEqual((await api(user.key, "PATCH", `/campaigns/${id}/editions/de`, { subject: "Diese Woche" })).body.editionLanguages, ["pt-BR", "de"]);
+		assert.equal((await api(user.key, "GET", `/campaigns/${id}`)).body.sendProblem.message, "German edition: add content");
+		assert.equal((await api(user.key, "PATCH", `/campaigns/${id}/editions/de`, { content: "Drei Links." })).status, 200);
+		const ready = (await api(user.key, "GET", `/campaigns/${id}`)).body;
+		assert.equal(ready.sendProblem, null);
+		assert.equal(ready.audience.find(({ language }) => language === "de").edition, "de");
+
+		const portuguese = (await api(user.key, "POST", "/campaigns", { ...issue, language: "pt-BR" })).body;
+		assert.deepEqual(
+			portuguese.audience.map(({ language, edition }) => [language, edition]),
+			[["de", null], ["en", null], ["pt-BR", "pt-BR"]],
+			"nothing in the newsletter's English: its readers are left out"
+		);
+		assert.equal(portuguese.audienceContacts, 1);
+		assertError(await api(user.key, "PATCH", `/campaigns/${id}/editions/en`, { subject: "Hi" }), 400, "validation_failed");
+		assertError(await api(user.key, "PATCH", `/campaigns/${id}`, { language: "de" }), 409, "conflict");
+		assertError(await api(user.key, "DELETE", `/campaigns/${id}/editions/fr`), 404, "not_found");
+
+		assert.equal((await api(user.key, "POST", `/campaigns/${id}/test`, { language: "pt-BR" })).status, 200);
+		assert.equal(sesEmails.at(-1).subject, "[Test] Esta semana");
+		assertError(await api(user.key, "POST", `/campaigns/${id}/test`, { language: "fr" }), 404, "not_found");
+
+		const copy = (await api(user.key, "POST", `/campaigns/${id}/duplicate`)).body;
+		assert.deepEqual(copy.editionLanguages, ["pt-BR", "de"]);
+		assert.deepEqual((await api(user.key, "DELETE", `/campaigns/${copy.id}/editions/de`)).body.editionLanguages, ["pt-BR"]);
+		assert.deepEqual((await api(user.key, "GET", `/campaigns/${id}`)).body.editionLanguages, ["pt-BR", "de"], "the original keeps its own");
+
+		const before = sesEmails.length;
+		assert.equal((await api(user.key, "POST", `/campaigns/${id}/send`)).body.stats.recipients, 3);
+		await runJobs();
+		const subjects = Object.fromEntries(sesEmails.slice(before).map(({ to, subject }) => [to.split("@")[0], subject]));
+		assert.deepEqual(subjects, { en: "This week", br: "Esta semana", de: "Diese Woche" });
+		assertError(await api(user.key, "PATCH", `/campaigns/${id}/editions/de`, { subject: "Neu" }), 409, "conflict");
+		const report = (await api(user.key, "GET", `/campaigns/${id}/report`)).body;
+		assert.deepEqual(report.languages.map(({ language, sent }) => [language, sent]).sort(), [["de", 1], ["en", 1], ["pt-BR", 1]]);
+	});
+
 	test("scheduling, unscheduling and test emails", async () => {
 		const user = await customer("schedule-api@example.com");
 		await importReaders(user, 1);

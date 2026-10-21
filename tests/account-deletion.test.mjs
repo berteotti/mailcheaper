@@ -133,8 +133,8 @@ async function connectApp(user, clientId = "app-client") {
 }
 
 // A paying customer with one of everything: Google as a sign-in method, a newsletter on the shared address, contacts
-// from an import, a campaign with a test sent, a verified domain, an image on R2, an API key, a connected app, problem
-// events, suppressions and an alert.
+// from an import, a campaign with a French edition and a test sent, a verified domain, an image on R2, an API key, a
+// connected app, problem events, suppressions and an alert.
 async function customer(email, slug) {
 	const user = await signIn(email);
 	const now = new Date().toISOString();
@@ -159,6 +159,7 @@ async function customer(email, slug) {
 		})
 	);
 	user.campaignId = await createCampaign(user);
+	assert.deepEqual(await as(user, () => m.campaigns.addCampaignEdition(user.campaignId, "fr")), { ok: true });
 	assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(user.campaignId)), { ok: true });
 	user.domain = `${slug}.dev`;
 	await addVerifiedDomain(user, user.domain);
@@ -178,6 +179,7 @@ const ACCOUNT_TABLES = {
 	Contact: "contacts",
 	ContactImport: "contact_imports",
 	Campaign: "campaigns",
+	CampaignEdition: "campaign_editions",
 	Message: "messages",
 	Event: "events",
 	Suppression: "suppressions",

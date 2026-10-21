@@ -1,11 +1,20 @@
 "use client";
 
-import { useCallback, useDeferredValue, useEffect, useEffectEvent, useMemo, useState, useTransition } from "react";
+import { useCallback, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useTransition } from "react";
 import { Check, CircleAlert, Copy, FlaskConical, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { duplicateCampaign, saveCampaign, sendTestCampaign } from "@/app/(app)/campaigns/actions";
+import {
+	addCampaignEdition,
+	deleteCampaignEdition,
+	duplicateCampaign,
+	saveCampaign,
+	saveCampaignEdition,
+	sendTestCampaign,
+	setCampaignLanguage,
+} from "@/app/(app)/campaigns/actions";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
 import BadgeStatus from "@/components/BadgeStatus";
+import DialogDeleteEdition from "@/components/DialogDeleteEdition";
 import DialogDiscardCampaign from "@/components/DialogDiscardCampaign";
 import DialogScheduleCampaign from "@/components/DialogScheduleCampaign";
 import DialogSendCampaign from "@/components/DialogSendCampaign";
@@ -15,6 +24,7 @@ import HeaderPage from "@/components/HeaderPage";
 import InputCampaignSlug from "@/components/InputCampaignSlug";
 import ListChecks from "@/components/ListChecks";
 import PreviewEmail from "@/components/PreviewEmail";
+import TabsEditions from "@/components/TabsEditions";
 import { Button } from "@/components/ui/button";
 import {
 	DropdownMenu,
@@ -24,19 +34,35 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatNumber } from "@/lib/format";
+import { DEFAULT_LANGUAGE, getLanguageName, getLanguageTag, matchLanguage } from "@/lib/languages";
 import { markdownToHtml } from "@/lib/markdown";
 import { getPresendChecks } from "@/lib/presend-checks";
-import { UNSUBSCRIBE_PLACEHOLDER, renderEmail, withResponsiveImages } from "@/lib/render-email";
+import { UNSUBSCRIBE_PLACEHOLDER, hasContent, renderEmail, withResponsiveImages } from "@/lib/render-email";
 import { slugify } from "@/lib/slug";
 import { usePaywall } from "@/lib/use-paywall";
 import { useToastError } from "@/lib/use-toast-error";
 import { useAutosave } from "@/lib/use-autosave";
 
 const UPLOADING_MESSAGE = "Wait for images to finish uploading";
+// The campaign's own subject and content among its editions, whatever its language: longer than any language code.
+const OWN = "campaign";
+
+// The editor saves rich text, or the HTML of an imported issue; Markdown opens as rich text.
+function toDraft(content) {
+	return {
+		subject: content.subject,
+		previewText: content.previewText,
+		body: content.format === "markdown" ? markdownToHtml(content.markdown) : content.html,
+		format: content.format === "html" ? "html" : "rich",
+	};
+}
 
 export default function FormCampaign({
 	campaign,
 	newsletter,
+	editions,
+	language,
+	audience,
 	audienceCount,
 	senderProblem,
 	isSendingEnabled,
@@ -48,37 +74,50 @@ export default function FormCampaign({
 	warmup,
 	newContacts,
 }) {
-	const isHtml = campaign.format === "html";
 	const [isDiscardOpen, setIsDiscardOpen] = useState(false);
-	const format = isHtml ? "html" : "rich";
-	const [initialBody] = useState(() =>
-		campaign.format === "markdown" ? markdownToHtml(campaign.markdown) : campaign.html
+	const [deleting, setDeleting] = useState(null);
+	// Each language's subject, preview text and body, saved together: a save sends the ones that changed.
+	const [drafts, setDrafts] = useState(() => ({
+		[OWN]: toDraft(campaign),
+		...Object.fromEntries(editions.map((edition) => [getLanguageTag(edition), toDraft(edition)])),
+	}));
+	const savedDraftsRef = useRef(drafts);
+	const [active, setActive] = useState(OWN);
+	const values = drafts[active] ?? drafts[OWN];
+	const isHtml = values.format === "html";
+	const activeLanguage = active === OWN ? language : active;
+	const save = useCallback(
+		async (snapshot) => {
+			for (const [key, draft] of Object.entries(snapshot)) {
+				if (savedDraftsRef.current[key] === draft) continue;
+				const result = key === OWN ? await saveCampaign(campaign._id, draft) : await saveCampaignEdition(campaign._id, key, draft);
+				if (result?.error) return result;
+				savedDraftsRef.current = { ...savedDraftsRef.current, [key]: draft };
+			}
+			return { ok: true };
+		},
+		[campaign._id]
 	);
-	const [values, setValues] = useState({
-		subject: campaign.subject,
-		previewText: campaign.previewText,
-		body: initialBody,
-	});
-	const save = useCallback((snapshot) => saveCampaign(campaign._id, { ...snapshot, format }), [campaign._id, format]);
-	const { isDirty, isSaving, error, flush } = useAutosave(values, save);
+	const { isDirty, isSaving, error, flush } = useAutosave(drafts, save);
 	const [isTesting, startTesting] = useTransition();
 	const [isWorking, startWorking] = useTransition();
 	const toastError = useToastError();
 	const paywall = usePaywall();
 	const hasPlan = paywall?.hasPlan ?? true;
 	const deferredValues = useDeferredValue(values);
-	const isUploading = values.body.includes('src="blob:');
+	const isUploading = Object.values(drafts).some(({ body }) => body.includes('src="blob:'));
 
 	const rendered = useMemo(
 		() =>
 			renderEmail({
-				format,
+				format: deferredValues.format,
 				html: deferredValues.body,
 				subject: deferredValues.subject,
 				previewText: deferredValues.previewText,
 				newsletter,
+				language: activeLanguage,
 			}),
-		[format, deferredValues, newsletter]
+		[deferredValues, newsletter, activeLanguage]
 	);
 	const previewHtml = useMemo(
 		() => withResponsiveImages(rendered.html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#")),
@@ -92,8 +131,32 @@ export default function FormCampaign({
 		isSendingEnabled,
 		planProblem,
 	});
+	// The checks list is the open language's; the other languages block a send without a subject or content.
+	const otherProblem = Object.entries(drafts)
+		.filter(([key]) => key !== active)
+		.map(([key, draft]) => {
+			const problem = !draft.subject.trim() ? "add a subject" : !hasContent(draft.body) ? "add content" : null;
+			return problem && `${getLanguageName(key === OWN ? language : key)}: ${problem}`;
+		})
+		.find(Boolean);
 	// Without a plan, Send and Schedule open the paywall first; the checks wait until there's one.
-	const blockingMessage = !hasPlan ? null : isUploading ? UPLOADING_MESSAGE : blocking[0]?.message;
+	const blockingMessage = !hasPlan ? null : isUploading ? UPLOADING_MESSAGE : (blocking[0]?.message ?? otherProblem);
+	const contactsReading = (tag) => audience.reduce((sum, row) => sum + (row.edition === tag ? row.contacts : 0), 0);
+	const tabs = [
+		{ key: OWN, language, contacts: contactsReading(language) },
+		...Object.keys(drafts)
+			.filter((key) => key !== OWN)
+			.map((key) => ({ key, language: key, contacts: contactsReading(key) })),
+	];
+	const leftOut = audience.filter(({ edition }) => !edition);
+	const leftOutCount = leftOut.reduce((sum, { contacts }) => sum + contacts, 0);
+	// Languages read by contacts who get another one, or nothing, to add first.
+	const missing = audience.filter(({ language: tag, edition }) => matchLanguage(tag, edition ? [edition] : []) === null);
+	// Once an edition is gone, its readers get another of the campaign's languages, else the newsletter's, if it has it.
+	const getNextLanguage = (tag) => {
+		const others = tabs.map((tab) => tab.language).filter((each) => each !== tag);
+		return matchLanguage(tag, others) ?? matchLanguage(getLanguageTag(newsletter) ?? DEFAULT_LANGUAGE, others);
+	};
 
 	async function persist() {
 		if (await flush()) return true;
@@ -106,7 +169,7 @@ export default function FormCampaign({
 		startTesting(async () => {
 			if (isUploading) return void toast.error(UPLOADING_MESSAGE);
 			if (!(await persist())) return;
-			const result = await sendTestCampaign(campaign._id);
+			const result = await sendTestCampaign(campaign._id, active === OWN ? null : active);
 			if (result?.error) toastError(result);
 			else toast.success(`Test sent to ${testEmail}`);
 		});
@@ -117,6 +180,37 @@ export default function FormCampaign({
 			const result = await action(campaign._id);
 			if (result?.error) toast.error(result.error);
 		});
+	}
+
+	function addEdition(tag) {
+		startWorking(async () => {
+			if (!(await persist())) return;
+			const result = await addCampaignEdition(campaign._id, tag);
+			if (result?.error) return void toast.error(result.error);
+			const draft = { subject: "", previewText: "", body: "", format: "rich" };
+			savedDraftsRef.current = { ...savedDraftsRef.current, [tag]: draft };
+			setDrafts((current) => ({ ...current, [tag]: draft }));
+			setActive(tag);
+		});
+	}
+
+	// What was typed in it is saved first, so a save still waiting can't bring it back.
+	async function deleteEdition(tag) {
+		if (!(await persist())) return false;
+		const result = await deleteCampaignEdition(campaign._id, tag);
+		if (result?.error) {
+			toast.error(result.error);
+			return false;
+		}
+		const withoutEdition = ({ [tag]: _deleted, ...rest }) => rest;
+		savedDraftsRef.current = withoutEdition(savedDraftsRef.current);
+		setDrafts(withoutEdition);
+		setActive(OWN);
+		return true;
+	}
+
+	function changeLanguage(tag) {
+		runAction((id) => setCampaignLanguage(id, tag));
 	}
 
 	const onKeyDown = useEffectEvent((event) => {
@@ -147,10 +241,10 @@ export default function FormCampaign({
 	}, []);
 
 	function update(key) {
-		return (event) => setValues((current) => ({ ...current, [key]: event.target.value }));
+		return (event) => setDrafts((current) => ({ ...current, [active]: { ...current[active], [key]: event.target.value } }));
 	}
 
-	const updateBody = useCallback((body) => setValues((current) => ({ ...current, body })), []);
+	const updateBody = useCallback((body) => setDrafts((current) => ({ ...current, [active]: { ...current[active], body } })), [active]);
 
 	const from = newsletter.fromName
 		? `${newsletter.fromName} <${newsletter.fromEmail}>`
@@ -159,7 +253,7 @@ export default function FormCampaign({
 	return (
 		<>
 			<HeaderPage
-				title={values.subject || "Untitled"}
+				title={drafts[OWN].subject || "Untitled"}
 				backHref="/campaigns"
 				icon={<AvatarNewsletter newsletter={newsletter} size={28} />}
 				meta={<BadgeStatus status={campaign.status} />}
@@ -178,7 +272,11 @@ export default function FormCampaign({
 							</Button>
 						</span>
 					</TooltipTrigger>
-					<TooltipContent>{isSendingEnabled || !hasPlan ? `Sends to ${testEmail}` : "Sending is off"}</TooltipContent>
+					<TooltipContent>
+						{isSendingEnabled || !hasPlan
+							? `Sends the ${getLanguageName(activeLanguage)} email to ${testEmail}`
+							: "Sending is off"}
+					</TooltipContent>
 				</Tooltip>
 				<GatePlan reason="schedule">
 					<DialogScheduleCampaign
@@ -227,7 +325,7 @@ export default function FormCampaign({
 				</DropdownMenu>
 				<DialogDiscardCampaign
 					id={campaign._id}
-					subject={values.subject}
+					subject={drafts[OWN].subject}
 					scheduledAt={campaign.status === "scheduled" ? campaign.scheduledAt : null}
 					isOpen={isDiscardOpen}
 					onOpenChange={setIsDiscardOpen}
@@ -250,7 +348,37 @@ export default function FormCampaign({
 									· {formatNumber(audienceCount)}
 								</span>
 							</span>
+							{leftOutCount > 0 && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span
+											tabIndex={0}
+											className="shrink-0 rounded text-muted-foreground tabular-nums underline decoration-dotted underline-offset-4"
+										>
+											{formatNumber(leftOutCount)} left out
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>
+										Nothing in their language or the newsletter&apos;s:{" "}
+										{leftOut.map(({ language: tag, contacts }) => `${getLanguageName(tag)} (${formatNumber(contacts)})`).join(", ")}
+									</TooltipContent>
+								</Tooltip>
+							)}
 						</span>
+					</Row>
+					<Row label="Language">
+						<TabsEditions
+							tabs={tabs}
+							active={active}
+							missing={missing}
+							ownLanguage={getLanguageTag(campaign)}
+							newsletterLanguage={getLanguageTag(newsletter)}
+							isPending={isWorking}
+							onSelect={setActive}
+							onAdd={addEdition}
+							onDelete={setDeleting}
+							onChangeLanguage={changeLanguage}
+						/>
 					</Row>
 					<Row label="Subject">
 						<input
@@ -270,7 +398,7 @@ export default function FormCampaign({
 							className="h-11 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
 						/>
 					</Row>
-					{archiveUrlBase && (
+					{archiveUrlBase && active === OWN && (
 						<Row label="URL">
 							<InputCampaignSlug
 								campaignId={campaign._id}
@@ -293,7 +421,7 @@ export default function FormCampaign({
 							/>
 						</div>
 					) : (
-						<EditorRich content={initialBody} onChange={updateBody} />
+						<EditorRich key={active} content={values.body} onChange={updateBody} />
 					)}
 				</div>
 
@@ -316,6 +444,13 @@ export default function FormCampaign({
 					/>
 				</div>
 			</div>
+			<DialogDeleteEdition
+				language={deleting}
+				contacts={deleting ? contactsReading(deleting) : 0}
+				nextLanguage={deleting ? getNextLanguage(deleting) : null}
+				onDelete={deleteEdition}
+				onOpenChange={(isOpen) => !isOpen && setDeleting(null)}
+			/>
 		</>
 	);
 }
