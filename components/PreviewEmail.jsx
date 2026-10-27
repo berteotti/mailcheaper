@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Monitor, Smartphone } from "lucide-react";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
+import { fillMergeTags } from "@/lib/merge-tags";
 import { cn } from "@/lib/utils";
 
 // fit="fill" stretches to the parent's height (editor); fit="content" grows to the email (report).
@@ -66,8 +67,8 @@ export default function PreviewEmail({
 							<span className="text-muted-foreground">&lt;{sender.fromEmail}&gt;</span>
 						</p>
 						<p className="truncate">
-							<span className="font-medium">{subject || "No subject"}</span>
-							{previewText && <span className="text-muted-foreground"> — {previewText}</span>}
+							<span className="font-medium">{fillMergeTags(subject) || "No subject"}</span>
+							{previewText && <span className="text-muted-foreground"> — {fillMergeTags(previewText)}</span>}
 						</p>
 					</div>
 				</div>

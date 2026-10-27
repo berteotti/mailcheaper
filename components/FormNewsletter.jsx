@@ -327,7 +327,7 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 						onChange={updateWelcome("previewText")}
 					/>
 				</Field>
-				<Field label="Content" hint="Markdown">
+				<Field label="Content" hint={`Markdown. {{first_name|there}} becomes each subscriber's first name, or "there" without one.`}>
 					<Textarea
 						name="welcomeMarkdown"
 						value={welcome.markdown}

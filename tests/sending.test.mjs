@@ -91,6 +91,28 @@ test("issues link to their archive page; drafts to the one their subject gives",
 	assert.equal(getIssueWebUrl({ campaign: welcome, newsletter: archived }), null, "welcome email");
 });
 
+test("each recipient's email has their name in place of the merge tags, tracked links and all", () => {
+	const archived = { ...newsletter, slug: "weekly", archiveEnabled: true };
+	const issue = {
+		...campaign,
+		_id: "84f1a2b3c4d5e6f7a8b9c0d3",
+		subject: "Hi {{first_name|there}}, issue 12",
+		previewText: "For {{first_name|you}}",
+		markdown: "Hi {{first_name|there}}, read [this](https://example.com).",
+	};
+	const named = buildRecipientEmail({ campaign: issue, newsletter: archived, contact: { ...contact, firstName: "Zoë" }, messageId: contact._id });
+	assert.equal(named.subject, "Hi Zoë, issue 12");
+	assert.ok(named.html.includes("<p>Hi Zoë, read <a href=\"https://mail.example.com/c/"));
+	assert.ok(named.html.includes("For Zoë"));
+	assert.ok(named.text.startsWith("Read online: https://mail.example.com/archive/weekly/p/hi-there-issue-12\n\nHi Zoë, read this ("), "a draft links to the page its subject gives, with the fallback");
+	assert.ok(!named.unsubscribeUrl.includes("{{"));
+
+	const unnamed = buildRecipientEmail({ campaign: issue, newsletter: archived, contact });
+	assert.equal(unnamed.subject, "Hi there, issue 12");
+	assert.ok(unnamed.html.includes("<p>Hi there, read"));
+	assert.ok(unnamed.text.includes("Hi there, read this"));
+});
+
 test("each step reaches the most engaged contacts up to what was sent plus the step", () => {
 	assert.equal(getNextStepLimit({ sentSoFar: 2000, additional: 5000 }), 7000);
 	assert.equal(getNextStepLimit({ sentSoFar: 2000, additional: undefined }), undefined, "everyone left");

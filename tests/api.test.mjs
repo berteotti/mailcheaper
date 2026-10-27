@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
+import { renderIssueBody } from "../lib/archive-content.js";
 import { getConfirmationContent } from "../lib/confirmation-content.js";
 import { getAll, getOne, getValue } from "../lib/db.js";
 import { insertRow, updateRows } from "../lib/records.js";
@@ -104,6 +105,7 @@ before(async () => {
 		jobs: (await import("../worker/jobs.js")).default,
 		accounts: await import("../lib/accounts.js"),
 		blocks: await import("../lib/account-blocks.js"),
+		archive: await import("../lib/archive-data.js"),
 		tokens: await import("../lib/api-key-tokens.js"),
 	};
 });
@@ -405,6 +407,50 @@ describe("sending through the API", () => {
 		assertError(await api(user.key, "PATCH", `/campaigns/${id}/editions/de`, { subject: "Neu" }), 409, "conflict");
 		const report = (await api(user.key, "GET", `/campaigns/${id}/report`)).body;
 		assert.deepEqual(report.languages.map(({ language, sent }) => [language, sent]).sort(), [["de", 1], ["en", 1], ["pt-BR", 1]]);
+	});
+
+	test("merge tags greet each contact by name in campaigns, test and welcome emails, and the archive shows their fallback", async () => {
+		const user = await customer("merge-tags-api@example.com");
+		const welcome = { enabled: true, subject: "Welcome, {{first_name|friend}}", markdown: "Hi {{first_name|there}}." };
+		assert.equal((await api(user.key, "PATCH", `/newsletters/${user.slug}`, { archiveEnabled: true, welcome })).status, 200);
+		const contacts = [
+			{ email: `named@${user.slug}.example.org`, firstName: "Ana", lastName: "<b>Silva</b>" },
+			{ email: `unnamed@${user.slug}.example.org` },
+		];
+		assert.equal((await api(user.key, "POST", "/contacts/import", { consent: true, contacts })).status, 200);
+		const id = await draft(user, { subject: "{{first_name|Hello}}, issue 1", previewText: "For {{first_name|you}}", content: "Dear {{first_name|reader}} {{last_name}}." });
+
+		assert.equal((await api(user.key, "POST", `/campaigns/${id}/test`)).status, 200);
+		assert.equal(sesEmails.at(-1).subject, "[Test] Hello, issue 1", "a tester off the list gets the fallbacks");
+		assert.equal((await api(user.signupsKey, "POST", "/contacts", { email: "merge-tags-api@example.com", firstName: " Owen ", ip: "203.0.113.7" })).status, 201);
+		await flushAfter();
+		assert.deepEqual([sesEmails.at(-1).subject, sesEmails.at(-1).text.split("\n")[0]], ["Welcome, Owen", "Hi Owen."], "the welcome email");
+		assert.equal((await api(user.key, "POST", `/campaigns/${id}/test`)).status, 200);
+		assert.equal(sesEmails.at(-1).subject, "[Test] Owen, issue 1", "one on the list gets their own name");
+
+		const before = sesEmails.length;
+		assert.equal((await api(user.key, "POST", `/campaigns/${id}/send`)).body.stats.recipients, 3);
+		await runJobs();
+		const emails = Object.fromEntries(sesEmails.slice(before).map((email) => [email.to.split("@")[0], email]));
+		assert.deepEqual(Object.fromEntries(Object.entries(emails).map(([to, { subject }]) => [to, subject])), {
+			named: "Ana, issue 1",
+			unnamed: "Hello, issue 1",
+			"merge-tags-api": "Owen, issue 1",
+		});
+		assert.ok(emails.named.html.includes("<p>Dear Ana &lt;b&gt;Silva&lt;/b&gt;.</p>"), "names are escaped");
+		assert.ok(emails.named.html.includes(">For Ana&#847;"), "the preview text");
+		assert.ok(emails.named.text.includes("Dear Ana <b>Silva</b>."));
+		assert.ok(emails.unnamed.html.includes("<p>Dear reader .</p>"));
+		for (const { html, text } of Object.values(emails)) assert.ok(!`${html}${text}`.includes("{{"));
+
+		const campaign = (await api(user.key, "GET", `/campaigns/${id}`)).body;
+		assert.equal(campaign.archiveSlug, "hello-issue-1", "the slug comes from the fallback");
+		assert.equal(campaign.subject, "{{first_name|Hello}}, issue 1", "the campaign keeps its tags");
+		const newsletter = await m.archive.getArchiveNewsletter(user.slug);
+		const issue = await m.archive.getArchiveIssue(newsletter, campaign.archiveSlug);
+		assert.deepEqual([issue.subject, issue.previewText], ["Hello, issue 1", "For you"]);
+		assert.deepEqual((await m.archive.listArchiveIssues(newsletter)).map(({ subject, previewText }) => [subject, previewText]), [["Hello, issue 1", "For you"]]);
+		assert.ok(renderIssueBody(issue).html.includes("<p>Dear reader .</p>"));
 	});
 
 	test("scheduling, unscheduling and test emails", async () => {

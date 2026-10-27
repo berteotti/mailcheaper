@@ -15,6 +15,7 @@ import {
 	Pilcrow,
 	RectangleHorizontal,
 	TextQuote,
+	UserRound,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -146,5 +147,12 @@ const SLASH_ITEMS = [
 		keywords: "callout container update promo",
 		icon: RectangleHorizontal,
 		run: (chain) => chain.wrapIn("callout"),
+	},
+	{
+		title: "First name",
+		keywords: "name merge tag personalize greeting",
+		icon: UserRound,
+		// Each reader's first name, "there" for one without (lib/merge-tags.js).
+		run: (chain) => chain.insertContent("{{first_name|there}}"),
 	},
 ];

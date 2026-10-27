@@ -30,6 +30,7 @@ MailCheap is the rest of what a newsletter needs, in one Next.js app on Cloudfla
 **Write and send**
 
 - Editor with a live email preview, slash commands and boxes. Images are dropped in, pasted, or picked from the ones you uploaded before. Markdown and raw HTML work too.
+- Merge tags greet each reader by name: `{{first_name|there}}` becomes their first name, or "there" when they have none, in the subject, preview text and content. The archive shows the fallback.
 - Checks before every send: subject, preview text, unsubscribe link, size under Gmail's 100 KB clip, postal address, verified domain.
 - Test emails, scheduling, and sending in batches through a Cloudflare Queue.
 - One issue in several languages: each contact gets the edition in theirs, read from imports or set by hand, and contacts without one, or in a language the issue isn't in, get the newsletter's. An issue in one other language alone goes to that language's readers alone.
