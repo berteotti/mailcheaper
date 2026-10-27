@@ -152,7 +152,7 @@ const SLASH_ITEMS = [
 		title: "First name",
 		keywords: "name merge tag personalize greeting",
 		icon: UserRound,
-		// Each reader's first name, "there" for one without (lib/merge-tags.js).
-		run: (chain) => chain.insertContent("{{first_name|there}}"),
+		// Each reader's first name; for one without, nothing, and no fallback word in a language the newsletter may not be in.
+		run: (chain) => chain.insertContent("{{first_name}}"),
 	},
 ];
