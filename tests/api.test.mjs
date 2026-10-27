@@ -440,7 +440,7 @@ describe("sending through the API", () => {
 		assert.ok(emails.named.html.includes("<p>Dear Ana &lt;b&gt;Silva&lt;/b&gt;.</p>"), "names are escaped");
 		assert.ok(emails.named.html.includes(">For Ana&#847;"), "the preview text");
 		assert.ok(emails.named.text.includes("Dear Ana <b>Silva</b>."));
-		assert.ok(emails.unnamed.html.includes("<p>Dear reader .</p>"));
+		assert.ok(emails.unnamed.html.includes("<p>Dear reader.</p>"));
 		for (const { html, text } of Object.values(emails)) assert.ok(!`${html}${text}`.includes("{{"));
 
 		const campaign = (await api(user.key, "GET", `/campaigns/${id}`)).body;
@@ -450,7 +450,7 @@ describe("sending through the API", () => {
 		const issue = await m.archive.getArchiveIssue(newsletter, campaign.archiveSlug);
 		assert.deepEqual([issue.subject, issue.previewText], ["Hello, issue 1", "For you"]);
 		assert.deepEqual((await m.archive.listArchiveIssues(newsletter)).map(({ subject, previewText }) => [subject, previewText]), [["Hello, issue 1", "For you"]]);
-		assert.ok(renderIssueBody(issue).html.includes("<p>Dear reader .</p>"));
+		assert.ok(renderIssueBody(issue).html.includes("<p>Dear reader.</p>"));
 	});
 
 	test("scheduling, unscheduling and test emails", async () => {
