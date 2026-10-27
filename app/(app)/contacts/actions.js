@@ -23,6 +23,8 @@ export async function addContact(_state, formData) {
 	const { output, failure } = await runDashboardAction("add_contact", {
 		newsletter: String(formData.get("newsletterId") ?? ""),
 		email: String(formData.get("email") ?? ""),
+		firstName: String(formData.get("firstName") ?? ""),
+		lastName: String(formData.get("lastName") ?? ""),
 		consent: formData.get("consent") === "on",
 	});
 	if (failure) return toFormError(failure);
@@ -42,6 +44,32 @@ export async function setContactLanguage(id, language) {
 	const { failure } = await runDashboardAction("update_contact_language", { id: String(id), language: language ?? null });
 	revalidatePath("/contacts");
 	return failure ? toFormError(failure) : { ok: true };
+}
+
+// An empty name clears it.
+export async function setContactName(id, { firstName, lastName } = {}) {
+	const { output, failure } = await runDashboardAction("update_contact_name", {
+		id: String(id),
+		firstName: String(firstName ?? ""),
+		lastName: String(lastName ?? ""),
+	});
+	revalidatePath("/contacts");
+	return failure ? toFormError(failure) : { firstName: output.firstName, lastName: output.lastName };
+}
+
+// One page of the address check; the dialog passes nextCursor back until it's null.
+export async function findUnreachableContacts({ newsletterId, cursor }) {
+	const { output, failure } = await runDashboardAction("find_unreachable_contacts", {
+		newsletter: String(newsletterId ?? ""),
+		...(cursor && { cursor: String(cursor) }),
+	});
+	return failure ? toFormError(failure) : output;
+}
+
+export async function deleteContacts(ids) {
+	const { output, failure } = await runDashboardAction("delete_contacts", { ids: Array.isArray(ids) ? ids.map(String) : [] });
+	revalidatePath("/contacts");
+	return failure ? toFormError(failure) : output;
 }
 
 // A link to the CSV with the list's filters, valid for an hour.

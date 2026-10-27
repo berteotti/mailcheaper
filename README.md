@@ -39,7 +39,8 @@ MailCheap is the rest of what a newsletter needs, in one Next.js app on Cloudfla
 
 - A signup form on the archive, and a signup API with API keys.
 - Confirmed opt-in, on by default. Welcome email.
-- CSV import from any platform. It leaves out invalid, misspelled (gmial.com), spam trap, role, throwaway, duplicate and suppressed addresses, and records that your readers agreed. Signups refuse misspellings with a suggestion.
+- CSV import from any platform, first and last names included. It leaves out invalid, misspelled (gmial.com), spam trap, role, throwaway, duplicate and suppressed addresses, and addresses on domains that can't receive email, and records that your readers agreed. Signups refuse misspellings with a suggestion.
+- Check addresses on the contacts page: it finds contacts on misspelled domains or domains that can't receive email, which you delete or keep.
 - Contacts you add by hand are subscribed at once, without a confirmation email, once you tick that they agreed. MailCheap records who ticked it and when.
 - Rate limits on signups, sign-in, unsubscribes, slug changes, the API, and the dashboard's test emails, sends, imports and uploads, on by default. An account's API keys, connected apps and dashboard share its limits, so more keys don't raise them.
 

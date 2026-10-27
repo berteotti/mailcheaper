@@ -196,6 +196,18 @@ describe("server actions refuse another account's data", () => {
 		assert.deepEqual(await snapshot(), before);
 	});
 
+	test("contacts: names, the address check and deleting", async () => {
+		const before = await snapshot();
+		assert.deepEqual(await as(alice, () => m.contacts.setContactName(bobData.readerId, { firstName: "Mallory" })), {
+			error: "Contact not found",
+		});
+		assert.deepEqual(await as(alice, () => m.contacts.findUnreachableContacts({ newsletterId: bobData.newsletterId })), {
+			error: "Newsletter not found",
+		});
+		assert.deepEqual(await as(alice, () => m.contacts.deleteContacts([bobData.readerId, bobData.dormantId])), { deleted: [], kept: [] });
+		assert.deepEqual(await snapshot(), before);
+	});
+
 	test("API keys: revoking", async () => {
 		const before = await snapshot();
 		assert.deepEqual(await as(alice, () => m.apiKeys.revokeApiKey(bobData.apiKeyId)), { error: "Key not found" });

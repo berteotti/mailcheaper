@@ -59,6 +59,7 @@ test("the dashboard counts the hourly limits of what costs something each call",
 			"add_domain",
 			"change_plan",
 			"check_domain",
+			"find_unreachable_contacts",
 			"import_contacts",
 			"open_billing_portal",
 			"resume_campaign",
@@ -81,6 +82,9 @@ test("the dashboard counts the hourly limits of what costs something each call",
 	const imports = m.registry.getAction("import_contacts");
 	assert.equal(imports.limitDashboard({}), true, "a file's first chunk counts");
 	assert.equal(imports.limitDashboard({ importId: "6650f1c2e9b1d4a012345678" }), false, "the chunks after it don't");
+	const checks = m.registry.getAction("find_unreachable_contacts");
+	assert.equal(checks.limitDashboard({}), true, "an address check's first page counts");
+	assert.equal(checks.limitDashboard({ cursor: "x" }), false, "the pages after it don't");
 });
 
 describe("test emails", () => {

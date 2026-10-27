@@ -82,6 +82,10 @@ function FormContact({ newsletter, onClose }) {
 				autoComplete="email"
 				spellCheck={false}
 			/>
+			<div className="grid grid-cols-2 gap-2">
+				<Input name="firstName" placeholder="First name" aria-label="First name" maxLength={100} autoComplete="off" />
+				<Input name="lastName" placeholder="Last name" aria-label="Last name" maxLength={100} autoComplete="off" />
+			</div>
 			<label className="flex items-start gap-2.5 text-sm">
 				<input
 					type="checkbox"

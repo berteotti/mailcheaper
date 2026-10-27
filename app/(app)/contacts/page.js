@@ -7,6 +7,7 @@ import BadgeStatus from "@/components/BadgeStatus";
 import ButtonExportContacts from "@/components/ButtonExportContacts";
 import CardAddContacts from "@/components/CardAddContacts";
 import DialogAddContact from "@/components/DialogAddContact";
+import DialogCheckContacts from "@/components/DialogCheckContacts";
 import DialogImportContacts from "@/components/DialogImportContacts";
 import FilterContacts from "@/components/FilterContacts";
 import GatePlan from "@/components/GatePlan";
@@ -25,7 +26,7 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { getAppUrl } from "@/lib/config";
-import { CONTACTS_PAGE_SIZE, findContactsPage } from "@/lib/contacts";
+import { CONTACTS_PAGE_SIZE, LIVE_STATUSES, contactSearchFilter, countContactsByStatus, findContactsPage } from "@/lib/contacts";
 import { getValue } from "@/lib/db";
 import { getAddContactCurl } from "@/lib/docs/reference";
 import { formatDate, formatNumber } from "@/lib/format";
@@ -60,6 +61,9 @@ export default async function ContactsPage({ searchParams }) {
 				(await getValue("SELECT 1 FROM contacts WHERE accountId = ? AND newsletterId = ? LIMIT 1", [String(account._id), newsletterId]))
 		);
 	const newsletter = selected && toNewsletterOption(selected);
+	// The address check looks at the whole newsletter, whatever the search.
+	const allCounts = query && hasContacts ? await countContactsByStatus(contactSearchFilter(account, { newsletterId })) : counts;
+	const liveCount = LIVE_STATUSES.reduce((sum, key) => sum + (allCounts[key] || 0), 0);
 
 	function href(changes) {
 		const next = new URLSearchParams(Object.entries({ status, q: query, page }).filter(([, value]) => value));
@@ -75,6 +79,7 @@ export default async function ContactsPage({ searchParams }) {
 		<>
 			<HeaderPage title="Contacts">
 				<ButtonExportContacts newsletterId={newsletterId} status={status} query={query} isDisabled={total === 0} />
+				{liveCount > 0 && <DialogCheckContacts newsletter={newsletter} count={liveCount} />}
 				{hasContacts && <DialogAddContact newsletter={newsletter} />}
 				<GatePlan reason="import">
 					<DialogImportContacts newsletter={newsletter} />
@@ -127,7 +132,7 @@ export default async function ContactsPage({ searchParams }) {
 						<Table>
 							<TableHeader>
 								<TableRow className="hover:bg-transparent">
-									<TableHead className="pl-4">Email</TableHead>
+									<TableHead className="pl-4">Contact</TableHead>
 									<TableHead>Status</TableHead>
 									<TableHead className="hidden md:table-cell">Language</TableHead>
 									<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
@@ -143,10 +148,20 @@ export default async function ContactsPage({ searchParams }) {
 											<span className="flex min-w-0 items-center gap-2.5">
 												<AvatarContact
 													email={contact.email}
+													name={contact.firstName ?? contact.lastName}
 													colorHash={contactColorHash(contact.email)}
 													size={26}
 												/>
-												<span className="truncate">{contact.email}</span>
+												{getName(contact) ? (
+													<span className="flex min-w-0 flex-col">
+														<span className="truncate">{getName(contact)}</span>
+														<span className="truncate text-xs font-normal text-muted-foreground">
+															{contact.email}
+														</span>
+													</span>
+												) : (
+													<span className="truncate">{contact.email}</span>
+												)}
 											</span>
 										</TableCell>
 										<TableCell>
@@ -173,6 +188,9 @@ export default async function ContactsPage({ searchParams }) {
 										<TableCell className="pr-2 text-right">
 											<MenuContact
 												id={contact._id.toString()}
+												email={contact.email}
+												firstName={contact.firstName}
+												lastName={contact.lastName}
 												status={contact.status}
 												language={getLanguageTag(contact)}
 												newsletterLanguage={getLanguageTag(selected)}
@@ -222,6 +240,10 @@ function PageLink({ href, isDisabled, label, children }) {
 			</Link>
 		</Button>
 	);
+}
+
+function getName({ firstName, lastName }) {
+	return [firstName, lastName].filter(Boolean).join(" ");
 }
 
 function contactColorHash(email) {

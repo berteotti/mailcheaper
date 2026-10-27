@@ -5,6 +5,7 @@ import { getAll, getOne, getValue } from "../lib/db.js";
 import { insertRow, updateRows } from "../lib/records.js";
 import { env as bindings } from "./helpers/bindings.mjs";
 import { activate, as, callApi, catchRedirect, form, memoryBucket, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { domainsWithoutMail } from "./stubs/mail-domains.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 import { remoteImages } from "./stubs/remote-image.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
@@ -211,6 +212,8 @@ describe("isolation through keys", () => {
 			["GET", `/contacts/${bobContact._id}`],
 			["GET", `/contacts/${encodeURIComponent(bobContact.email)}`],
 			["PATCH", `/contacts/${bobContact._id}`, { status: "unsubscribed" }],
+			["PATCH", `/contacts/${bobContact._id}/name`, { firstName: "Hacked" }],
+			["GET", `/contacts/unreachable?newsletter=${bob.slug}`],
 			["GET", `/newsletters/${bob.slug}`],
 			["PATCH", `/newsletters/${bob.newsletterId}`, { name: "Taken" }],
 			["GET", `/contacts?newsletter=${bob.slug}`],
@@ -221,6 +224,8 @@ describe("isolation through keys", () => {
 		for (const [method, path, body] of attempts) {
 			assertError(await api(alice.key, method, path, body), 404, "not_found");
 		}
+		const deletion = await api(alice.key, "POST", "/contacts/delete", { ids: [String(bobContact._id)] });
+		assert.deepEqual(deletion.body, { deleted: [], kept: [] }, "another account's contact is in neither list");
 		assert.equal(await snapshot(), before, "nothing of Bob's changed");
 		assert.equal(sesEmails.some(({ subject }) => subject?.includes("Bob's issue")), false);
 
@@ -505,6 +510,147 @@ describe("contacts", () => {
 		const lena = (await api(user.key, "GET", "/contacts/lena%40example.org")).body;
 		await as(user, () => m.contacts.setContactLanguage(lena.id, null));
 		assert.equal((await api(user.key, "GET", "/contacts/lena%40example.org")).body.language, null, "the dashboard's menu");
+	});
+
+	test("names: on signup and import, changed one at a time, kept by an empty cell, cleared by null, and exported", async () => {
+		const user = await customer("names-api@example.com");
+		const contact = async (email) => (await api(user.key, "GET", `/contacts/${encodeURIComponent(email)}`)).body;
+		const names = async (email) => {
+			const { firstName, lastName } = await contact(email);
+			return [firstName, lastName];
+		};
+		assert.equal((await api(user.signupsKey, "POST", "/contacts", { email: "ana@example.org", firstName: " Ana ", lastName: "Silva" })).status, 201);
+		assert.equal((await api(user.signupsKey, "POST", "/contacts", { email: "ana@example.org", firstName: "Someone" })).status, 200);
+		assert.deepEqual(await names("ana@example.org"), ["Ana", "Silva"], "signing up again keeps the contact's name");
+		assertError(await api(user.signupsKey, "POST", "/contacts", { email: "long@example.org", firstName: "x".repeat(101) }), 400, "validation_failed");
+
+		await api(user.key, "POST", "/contacts/import", {
+			consent: true,
+			contacts: [
+				{ email: "ana@example.org", firstName: "Ana Maria", lastName: "" },
+				{ email: "bo@example.org", firstName: "Bo" },
+				{ email: "cy@example.org" },
+			],
+		});
+		assert.deepEqual(await names("ana@example.org"), ["Ana Maria", "Silva"], "a name in the file replaces theirs, an empty cell keeps it");
+		assert.deepEqual(await names("bo@example.org"), ["Bo", null]);
+		assert.deepEqual(await names("cy@example.org"), [null, null]);
+
+		const renamed = await api(user.key, "PATCH", "/contacts/bo%40example.org/name", { lastName: "Lind" });
+		assert.deepEqual([renamed.body.firstName, renamed.body.lastName], ["Bo", "Lind"], "a name left out stays");
+		assert.equal((await api(user.key, "PATCH", "/contacts/bo%40example.org/name", { lastName: "Lind" })).status, 200, "safe to repeat");
+		const cleared = await api(user.key, "PATCH", "/contacts/bo%40example.org/name", { firstName: null, lastName: "  " });
+		assert.deepEqual([cleared.body.firstName, cleared.body.lastName], [null, null]);
+		assertError(await api(user.signupsKey, "PATCH", "/contacts/bo%40example.org/name", { firstName: "Bo" }), 403, "forbidden");
+
+		assert.deepEqual(
+			await as(user, () => m.contacts.addContact(null, form({ newsletterId: user.newsletterId, email: "dee@example.org", firstName: "Dee", lastName: "", consent: "on" }))),
+			{ email: "dee@example.org", status: "active" }
+		);
+		assert.deepEqual(await names("dee@example.org"), ["Dee", null], "the dashboard's Add contact");
+		const dee = await contact("dee@example.org");
+		assert.deepEqual(await as(user, () => m.contacts.setContactName(dee.id, { firstName: "Deirdre", lastName: "Vale" })), {
+			firstName: "Deirdre",
+			lastName: "Vale",
+		});
+		assert.deepEqual(await names("dee@example.org"), ["Deirdre", "Vale"], "the dashboard's Edit name");
+
+		const exported = await api(user.key, "GET", "/contacts/export");
+		const [header, ...lines] = (await (await m.exportRoute.GET(new Request(exported.body.url))).text()).trim().split("\r\n");
+		const columns = header.split(",");
+		const ana = lines.map((line) => line.split(",")).find((cells) => cells[0] === "ana@example.org");
+		assert.deepEqual([ana[columns.indexOf("first_name")], ana[columns.indexOf("last_name")]], ["Ana Maria", "Silva"]);
+	});
+
+	test("the address check lists live contacts that can't get email a page at a time, and the ones picked are deleted with their emails", async () => {
+		const user = await customer("address-check@example.com");
+		domainsWithoutMail.add("dead-shop.example");
+		let minutes = 0;
+		// Contacts from before the checks existed, which an import or a signup would refuse today.
+		const add = (email, fields = {}) =>
+			insertRow("contacts", {
+				accountId: user.accountId,
+				newsletterId: user.newsletterId,
+				email,
+				subscribedAt: new Date(Date.UTC(2025, 0, 1, 0, minutes++)),
+				...fields,
+			});
+		const jo = await add("jo@dead-shop.example", { firstName: "Jo" });
+		const kim = await add("kim@gmial.com");
+		const mo = await add("mo@dead-shop.example", { status: "pending" });
+		const nia = await add("nia@dead-shop.example");
+		const lu = await add("lu@dead-shop.example", { status: "unsubscribed" });
+		await add("ok@example.org");
+		// A domain each, past what one page looks up.
+		for (const start of [0, 75]) {
+			const contacts = Array.from({ length: 75 }, (_, index) => ({ email: `r${start + index}@shop${start + index}.example` }));
+			assert.equal((await api(user.key, "POST", "/contacts/import", { consent: true, contacts })).body.created, 75);
+		}
+
+		const message = (contact, fields) =>
+			insertRow("messages", {
+				accountId: user.accountId,
+				kind: "welcome",
+				newsletterId: user.newsletterId,
+				contactId: contact._id,
+				email: contact.email,
+				...fields,
+			});
+		const delivered = await message(jo, { status: "delivered", sentAt: new Date(), deliveredAt: new Date() });
+		await insertRow("events", { accountId: user.accountId, type: "delivered", messageId: delivered._id, occurredAt: new Date() });
+		await message(mo, { status: "queued" });
+		await message(nia, { status: "bounced", sentAt: new Date(), bouncedAt: new Date() });
+
+		const pages = [];
+		let cursor = null;
+		do {
+			const page = await api(user.key, "GET", `/contacts/unreachable${cursor ? `?cursor=${cursor}` : ""}`);
+			assert.equal(page.status, 200, JSON.stringify(page.body));
+			pages.push(page.body);
+			cursor = page.body.nextCursor;
+		} while (cursor);
+		assert.equal(pages.length, 2, "a page looks up 100 domains at most");
+		assert.equal(pages[0].checked, 100, "the imported contacts, newest, one domain each");
+		assert.equal(pages.reduce((sum, { checked }) => sum + checked, 0), 155, "every active, pending and dormant contact, once");
+		const found = pages.flatMap(({ contacts }) => contacts);
+		assert.deepEqual(
+			found.map(({ email, reason, suggestion }) => [email, reason, suggestion]),
+			[
+				["nia@dead-shop.example", "noMail", null],
+				["mo@dead-shop.example", "noMail", null],
+				["kim@gmial.com", "typo", "kim@gmail.com"],
+				["jo@dead-shop.example", "noMail", null],
+			],
+			"newest first, the unsubscribed contact left out"
+		);
+		assert.equal(found.at(-1).firstName, "Jo");
+		assertError(await api(user.key, "GET", "/contacts/unreachable?cursor=nope"), 400, "validation_failed");
+		assertError(await api(user.signupsKey, "GET", "/contacts/unreachable"), 403, "forbidden");
+
+		const ids = [jo, kim, mo, nia, lu].map(({ _id }) => String(_id));
+		assertError(await api(user.signupsKey, "POST", "/contacts/delete", { ids }), 403, "forbidden");
+		const deletion = await api(user.key, "POST", "/contacts/delete", { ids: [...ids, "6650f1c2e9b1d4a012345678", "nope"] });
+		assert.deepEqual(deletion.body.deleted.sort(), [jo, kim].map(({ _id }) => String(_id)).sort());
+		assert.deepEqual(
+			deletion.body.kept.sort(),
+			[mo, nia, lu].map(({ _id }) => String(_id)).sort(),
+			"an email going out, a bounce on record and an unsubscribe keep their contact"
+		);
+		const remaining = await getAll("SELECT email FROM contacts WHERE accountId = ? AND email LIKE '%dead-shop.example' OR email = 'kim@gmial.com'", [user.accountId]);
+		assert.deepEqual(remaining.map(({ email }) => email).sort(), ["lu@dead-shop.example", "mo@dead-shop.example", "nia@dead-shop.example"]);
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ? AND contactId = ?", [user.accountId, jo._id]), 0, "its emails went too");
+		assert.equal(await getValue("SELECT count(*) FROM events WHERE accountId = ? AND messageId = ?", [user.accountId, delivered._id]), 0);
+		assert.equal(await getValue("SELECT count(*) FROM messages WHERE accountId = ?", [user.accountId]), 2, "the kept contacts' emails stay");
+		assert.deepEqual((await api(user.key, "POST", "/contacts/delete", { ids })).body.deleted, [], "safe to repeat");
+
+		const left = [];
+		do {
+			const page = await as(user, () => m.contacts.findUnreachableContacts({ newsletterId: user.newsletterId, cursor }));
+			left.push(...page.contacts.map(({ email }) => email));
+			cursor = page.nextCursor;
+		} while (cursor);
+		assert.deepEqual(left, ["nia@dead-shop.example", "mo@dead-shop.example"], "the dashboard's check");
+		assert.deepEqual(await as(user, () => m.contacts.deleteContacts([String(nia._id)])), { deleted: [], kept: [String(nia._id)] });
 	});
 
 	test("signups from a site send the welcome email and answer browsers", async () => {

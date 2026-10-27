@@ -38,6 +38,8 @@ gus@example.com,,,needs_attention,free,2023-04-11 14:02:46 UTC,,Yes,
 			"gus@example.com": "dormant",
 		});
 		assert.equal(rows[0].subscribedAt, "2023-03-24T10:23:10.000Z");
+		assert.equal(rows[0].firstName, "Ada");
+		assert.equal(rows[1].firstName, undefined);
 	});
 
 	// The API's subscription fields, with created in Unix seconds.
@@ -77,6 +79,8 @@ lea@example.com,Lea,2024-05-02,France,substack,4
 		assert.deepEqual(rows[0], {
 			email: "lea@example.com",
 			status: "active",
+			firstName: "Lea",
+			lastName: undefined,
 			subscribedAt: "2024-05-02T00:00:00.000Z",
 			emailsReceived: undefined,
 			openRate: undefined,
@@ -97,6 +101,7 @@ max@example.com,Max,,2,2023-04-21 11:16:57,,2023-04-21 11:16:57,,,,,,,,,2023-04-
 `);
 		assert.equal(rows[0].status, "active");
 		assert.equal(rows[0].subscribedAt, "2023-04-21T11:16:57.000Z");
+		assert.equal(rows[0].firstName, "Max");
 	});
 
 	test("imports the unsubscribed file as unsubscribed and the cleaned file as bounced", () => {
@@ -131,6 +136,7 @@ Sam,sam@example.com,2025-01-18T09:30:00Z,complained,,,,
 			"sam@example.com": "complained",
 		});
 		assert.equal(rows[0].subscribedAt, "2025-01-15T09:30:00.000Z");
+		assert.equal(rows[0].firstName, "Pia");
 	});
 
 	test("reads the statuses as the subscribers page names them", () => {
@@ -171,6 +177,7 @@ xia@example.com,Xia,,junk,2026-01-05 12:00:00
 			"xia@example.com": "complained",
 		});
 		assert.equal(rows[0].subscribedAt, "2026-01-01T12:00:00.000Z");
+		assert.deepEqual([rows[0].firstName, rows[0].lastName], ["Tom", undefined], "name is the first name beside last_name");
 	});
 
 	test("finds the email in a Subscriber column", () => {
@@ -220,6 +227,7 @@ id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,cr
 6650a1b2c3d4e5f6a7b8c9d1,zoe@example.com,Zoe,,false,true,cus_1234,2025-06-02T09:30:00.000Z,,,Premium,
 `);
 		assert.deepEqual(statusesOf(rows), { "yan@example.com": "active", "zoe@example.com": "unsubscribed" });
+		assert.equal(rows[0].firstName, "Yan");
 		assert.equal(rows[0].subscribedAt, "2025-06-01T09:30:00.000Z");
 	});
 });
@@ -227,7 +235,8 @@ id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,cr
 describe("EmailOctopus", () => {
 	// The export has the email address, first and last name, tags and custom fields; statuses as its API names them.
 	test("reads the export of a status filter, and a Status column when there is one", () => {
-		assert.equal(importFile("Email address,First name,Last name,Tags\nava@example.com,Ava,Ray,vip").rows[0].status, "active");
+		const [ava] = importFile("Email address,First name,Last name,Tags\nava@example.com,Ava,Ray,vip").rows;
+		assert.deepEqual([ava.status, ava.firstName, ava.lastName], ["active", "Ava", "Ray"]);
 
 		const { rows } = importFile(`
 Email address,First name,Last name,Status,Created at

@@ -12,6 +12,9 @@ test("maps common export headers", () => {
 	const columns = mapColumns(["Email", "Status", "Created At", "Open Rate", "Click Through Rate"]);
 	assert.deepEqual(columns, {
 		email: "Email",
+		firstName: null,
+		lastName: null,
+		name: null,
 		status: "Status",
 		subscribedAt: "Created At",
 		emailsReceived: null,
@@ -76,6 +79,30 @@ test("reads a language column, with the regions MailCheap tells apart, and leave
 	assert.equal(sanitizeImportRow({ email: "ana@example.com", status: "active", language: "<b>" }).language, undefined);
 });
 
+test("reads first and last names, or splits a full name when there's no last name column", () => {
+	const read = (headers, row) => {
+		const { firstName, lastName } = normalizeImportRow({ email: "jane@example.com", ...row }, mapColumns(["email", ...headers]));
+		return [firstName, lastName];
+	};
+	assert.deepEqual(read(["First Name", "Last Name"], { "First Name": " Jane ", "Last Name": "Doe" }), ["Jane", "Doe"]);
+	assert.deepEqual(read(["fname", "surname"], { fname: "Jane", surname: "" }), ["Jane", undefined]);
+	assert.deepEqual(read(["name", "last_name"], { name: "Jane", last_name: "Doe" }), ["Jane", "Doe"], "MailerLite's name is the first name");
+	assert.deepEqual(read(["Full name"], { "Full name": "Jane  van Doe" }), ["Jane", "van Doe"], "a full name splits after its first word");
+	assert.deepEqual(read(["name"], { name: "Cher" }), ["Cher", undefined]);
+	assert.deepEqual(read(["name"], { name: "  " }), [undefined, undefined]);
+	assert.deepEqual(read([], {}), [undefined, undefined]);
+	assert.deepEqual(read(["first_name", "name"], { first_name: "Jane", name: "Jane Doe" }), ["Jane", undefined], "a first name column wins");
+});
+
+test("names are trimmed, cut to 100 characters and lose control characters, from the browser too", () => {
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", firstName: "Ana\u0000\tMa\u200bria\u202e" }).firstName, "Ana Maria");
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", lastName: "مهدی\u200cزاده" }).lastName, "مهدی\u200cزاده", "a zero-width non-joiner stays");
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", lastName: "x".repeat(300) }).lastName.length, 100);
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", firstName: "   " }).firstName, undefined);
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", firstName: 42 }).firstName, undefined);
+	assert.equal(sanitizeImportRow({ email: "a@example.com", status: "active", lastName: "Jos\u0065\u0301" }).lastName, "José", "composed, as NFC");
+});
+
 test("sanitizes rows coming from the browser", () => {
 	assert.equal(sanitizeImportRow({ email: "reader@example.com", status: "admin" }), null);
 	assert.equal(sanitizeImportRow({ email: "reader@example.com", status: "__proto__" }), null);
@@ -91,6 +118,8 @@ test("sanitizes rows coming from the browser", () => {
 	assert.deepEqual(row, {
 		email: "reader@example.com",
 		status: "active",
+		firstName: undefined,
+		lastName: undefined,
 		subscribedAt: undefined,
 		emailsReceived: undefined,
 		openRate: 1,

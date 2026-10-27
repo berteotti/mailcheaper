@@ -1,4 +1,5 @@
-export default function AvatarContact({ email, colorHash, size = 24 }) {
+// name: the contact's, whose first letter shows instead of the email's.
+export default function AvatarContact({ email, name, colorHash, size = 24 }) {
 	const hue = Math.round((Number.parseInt(colorHash.slice(0, 4), 16) / 0xffff) * 360);
 
 	return (
@@ -12,7 +13,7 @@ export default function AvatarContact({ email, colorHash, size = 24 }) {
 			}}
 			className="relative grid shrink-0 place-items-center overflow-hidden rounded-full font-semibold text-white uppercase outline -outline-offset-1 outline-black/5 dark:outline-white/10"
 		>
-			{email.charAt(0)}
+			{(name || email).charAt(0)}
 		</span>
 	);
 }

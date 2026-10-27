@@ -56,7 +56,7 @@ test("CSV cells are quoted when needed and never start a formula, the email incl
 		stats: { sent: 3, opens: 2, clicks: 1 },
 	};
 	const row = toCsvRow(contact, new Map([[NEWSLETTER, "weekly"]]));
-	assert.equal(row, `'=cmd|'calc'!a1@example.com,active,weekly,"'=HYPERLINK(""http://x"",""click"")",,2026-01-02T03:04:05.000Z,,,,,,3,2,1\r\n`);
+	assert.equal(row, `'=cmd|'calc'!a1@example.com,,,active,weekly,"'=HYPERLINK(""http://x"",""click"")",,2026-01-02T03:04:05.000Z,,,,,,3,2,1\r\n`);
 	assert.ok(!/^[=+\-@\t\r]/.test(row), "the email cell doesn't open a formula");
 	// A plain address is untouched, so an export still re-imports as it was.
 	assert.equal(toCsvRow({ email: "jane@example.com", status: "active" }).split(",")[0], "jane@example.com");
@@ -71,11 +71,23 @@ test("the export's columns are the ones the import reads", () => {
 			subscribedAt: columns.subscribedAt,
 			emailsReceived: columns.emailsReceived,
 			language: columns.language,
+			firstName: columns.firstName,
+			lastName: columns.lastName,
 		},
-		{ email: "email", status: "status", subscribedAt: "subscribed_at", emailsReceived: "emails_received", language: "language" }
+		{
+			email: "email",
+			status: "status",
+			subscribedAt: "subscribed_at",
+			emailsReceived: "emails_received",
+			language: "language",
+			firstName: "first_name",
+			lastName: "last_name",
+		}
 	);
+	const cell = (contact, name) => toCsvRow(contact).split(",")[getCsvHeader().trim().split(",").indexOf(name)];
 	// A contact in the newsletter's language exports an empty cell, which the import leaves empty.
-	const [, , , , language] = toCsvRow({ email: "jane@example.com", status: "active", language: null }).split(",");
-	assert.equal(language, "");
-	assert.equal(toCsvRow({ email: "jean@example.com", status: "active", language: "fr" }).split(",")[4], "fr");
+	assert.equal(cell({ email: "jane@example.com", status: "active", language: null }, "language"), "");
+	assert.equal(cell({ email: "jean@example.com", status: "active", language: "fr" }, "language"), "fr");
+	assert.equal(cell({ email: "jean@example.com", status: "active", firstName: "Jean" }, "first_name"), "Jean");
+	assert.equal(cell({ email: "jean@example.com", status: "active", lastName: "=SUM(A1)" }, "last_name"), "'=SUM(A1)", "a name can't open a formula");
 });
