@@ -226,8 +226,15 @@ describe("isolation through keys", () => {
 		for (const [method, path, body] of attempts) {
 			assertError(await api(alice.key, method, path, body), 404, "not_found");
 		}
-		const deletion = await api(alice.key, "POST", "/contacts/delete", { ids: [String(bobContact._id)] });
-		assert.deepEqual(deletion.body, { deleted: [], kept: [] }, "another account's contact is in neither list");
+		const named = [{ ids: [String(bobContact._id)] }, { emails: [bobContact.email] }];
+		for (const contacts of named) {
+			const notFound = contacts.ids ?? contacts.emails;
+			const deletion = await api(alice.key, "POST", "/contacts/delete", contacts);
+			assert.deepEqual(deletion.body, { deleted: [], kept: [], notFound }, "another account's contact isn't found");
+			const update = await api(alice.key, "POST", "/contacts/update", { ...contacts, status: "unsubscribed", language: "fr" });
+			assert.deepEqual(update.body, { updated: [], unchanged: [], skipped: [], notFound });
+		}
+		assertError(await api(alice.key, "POST", "/contacts/delete", { newsletter: bob.slug, emails: [bobContact.email] }), 404, "not_found");
 		assert.equal(await snapshot(), before, "nothing of Bob's changed");
 		assert.equal(sesEmails.some(({ subject }) => subject?.includes("Bob's issue")), false);
 
@@ -696,7 +703,87 @@ describe("contacts", () => {
 			cursor = page.nextCursor;
 		} while (cursor);
 		assert.deepEqual(left, ["nia@dead-shop.example", "mo@dead-shop.example"], "the dashboard's check");
-		assert.deepEqual(await as(user, () => m.contacts.deleteContacts([String(nia._id)])), { deleted: [], kept: [String(nia._id)] });
+		assert.deepEqual(await as(user, () => m.contacts.deleteContacts({ ids: [String(nia._id)] })), { deleted: [], kept: [String(nia._id)], notFound: [] });
+	});
+
+	test("contacts change and go in bulk, by ID or by address, in one newsletter or every one", async () => {
+		const user = await customer("bulk-contacts@example.com");
+		const other = (await api(user.key, "POST", "/newsletters", { name: "Other" })).body;
+		await api(user.key, "POST", "/contacts/import", {
+			consent: true,
+			contacts: [
+				{ email: "ana@example.org" },
+				{ email: "bo@example.org" },
+				{ email: "cy@example.org", status: "dormant" },
+				{ email: "di@example.org", status: "bounced" },
+				{ email: "ed@example.org", status: "unsubscribed" },
+				{ email: "fi@example.org", status: "dormant" },
+			],
+		});
+		await api(user.key, "POST", "/contacts/import", { newsletter: other.id, consent: true, contacts: [{ email: "ana@example.org" }] });
+		const contact = async (email, newsletter = user.newsletterId) =>
+			(await api(user.key, "GET", `/contacts/${encodeURIComponent(email)}?newsletter=${newsletter}`)).body;
+		const ids = async (...emails) => Promise.all(emails.map(async (email) => (await contact(email)).id));
+		const sorted = (result) => Object.fromEntries(Object.entries(result).map(([key, values]) => [key, [...values].sort()]));
+
+		const unsubscribed = await api(user.key, "POST", "/contacts/update", {
+			newsletter: user.slug,
+			emails: ["Ana@Example.org", "cy@example.org", "di@example.org", "ed@example.org", "nobody@example.org"],
+			status: "unsubscribed",
+		});
+		assert.equal(unsubscribed.status, 200, JSON.stringify(unsubscribed.body));
+		assert.deepEqual(sorted(unsubscribed.body), {
+			updated: (await ids("ana@example.org", "cy@example.org")).sort(),
+			unchanged: await ids("ed@example.org"),
+			skipped: await ids("di@example.org"),
+			notFound: ["nobody@example.org"],
+		});
+		assert.equal((await contact("cy@example.org")).status, "unsubscribed");
+		assert.ok((await contact("cy@example.org")).unsubscribedAt);
+		assert.equal((await contact("ana@example.org", other.id)).status, "active", "only the newsletter named");
+
+		const [bo, fi] = await ids("bo@example.org", "fi@example.org");
+		const reactivated = await api(user.key, "POST", "/contacts/update", { ids: [bo, fi, "6650f1c2e9b1d4a012345678"], status: "active" });
+		assert.deepEqual(reactivated.body, { updated: [fi], unchanged: [bo], skipped: [], notFound: ["6650f1c2e9b1d4a012345678"] });
+		assert.equal((await contact("fi@example.org")).status, "active");
+
+		const french = await api(user.key, "POST", "/contacts/update", { emails: ["ana@example.org"], language: "fr" });
+		assert.equal(french.body.updated.length, 2, "without a newsletter, the address in each");
+		assert.equal((await contact("ana@example.org", other.id)).language, "fr");
+		assert.equal((await api(user.key, "POST", "/contacts/update", { emails: ["ana@example.org"], language: "fr" })).body.unchanged.length, 2, "safe to repeat");
+
+		const both = await api(user.key, "POST", "/contacts/update", { emails: ["bo@example.org", "di@example.org"], status: "unsubscribed", language: "de" });
+		assert.deepEqual(both.body, { updated: [bo], unchanged: [], skipped: await ids("di@example.org"), notFound: [] });
+		assert.deepEqual([(await contact("bo@example.org")).status, (await contact("bo@example.org")).language], ["unsubscribed", "de"]);
+		assert.equal((await contact("di@example.org")).language, null, "a contact whose status can't change takes nothing");
+
+		assertError(await api(user.key, "POST", "/contacts/update", { emails: ["bo@example.org"] }), 400, "validation_failed");
+		assertError(await api(user.key, "POST", "/contacts/update", { status: "unsubscribed" }), 400, "validation_failed");
+		assertError(await api(user.key, "POST", "/contacts/update", { emails: ["bo@example.org"], language: "xx" }), 400, "validation_failed");
+		const tooMany = { ids: Array.from({ length: 60 }, () => bo), emails: Array.from({ length: 41 }, (_, index) => `p${index}@example.org`) };
+		assertError(await api(user.key, "POST", "/contacts/update", { ...tooMany, status: "active" }), 400, "validation_failed");
+		assertError(await api(user.key, "POST", "/contacts/delete", tooMany), 400, "validation_failed");
+		assertError(await api(user.key, "POST", "/contacts/update", { emails: ["bo@example.org"], newsletter: "nope", status: "active" }), 404, "not_found");
+		assertError(await api(user.signupsKey, "POST", "/contacts/update", { emails: ["bo@example.org"], status: "unsubscribed" }), 403, "forbidden");
+
+		const otherAna = (await contact("ana@example.org", other.id)).id;
+		const deleted = await api(user.key, "POST", "/contacts/delete", { newsletter: other.id, emails: ["ana@example.org", "bo@example.org"] });
+		assert.deepEqual(deleted.body, { deleted: [otherAna], kept: [], notFound: ["bo@example.org"] });
+		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND email = 'ana@example.org'", [user.accountId]), 1, "the other newsletter's stays");
+		const kept = await api(user.key, "POST", "/contacts/delete", { emails: ["ana@example.org", "fi@example.org"] });
+		assert.deepEqual(sorted(kept.body), { deleted: [fi], kept: await ids("ana@example.org"), notFound: [] }, "an unsubscribed contact stays");
+		assertError(await api(user.key, "POST", "/contacts/delete", {}), 400, "validation_failed");
+
+		const dashboard = await as(user, () =>
+			m.contacts.updateContacts({ emails: ["cy@example.org", "zed@example.org"], newsletterId: user.newsletterId }, { language: null })
+		);
+		assert.deepEqual(dashboard, { updated: [], unchanged: await ids("cy@example.org"), skipped: [], notFound: ["zed@example.org"] }, "the dashboard's Edit by email");
+		assert.deepEqual(await as(user, () => m.contacts.updateContacts({ ids: [bo] }, { status: "active" })), {
+			updated: [],
+			unchanged: [],
+			skipped: [bo],
+			notFound: [],
+		});
 	});
 
 	test("signups from a site send the welcome email and answer browsers", async () => {

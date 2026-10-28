@@ -11,7 +11,7 @@
     "dev": "alchemy dev --stage local",
     "plan": "alchemy plan",
     "deploy": "alchemy deploy",
-    "deploy:prod": "alchemy deploy --stage prod --env-file .env.prod",
+    "deploy:prod": "alchemy deploy --stage prod --env-file .env.prod -y",
     "destroy": "alchemy destroy",
     "check:cloudflare": "vinext check",
     "lint": "eslint",

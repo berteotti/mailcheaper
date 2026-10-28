@@ -185,13 +185,23 @@ describe("server actions refuse another account's data", () => {
 		assert.deepEqual(await snapshot(), before);
 	});
 
-	test("contacts: status changes", async () => {
+	test("contacts: status and language changes, one at a time and in bulk", async () => {
 		const before = await snapshot();
 		assert.deepEqual(await as(alice, () => m.contacts.setContactStatus(bobData.readerId, "unsubscribed")), {
 			error: "Contact not found",
 		});
 		assert.deepEqual(await as(alice, () => m.contacts.setContactStatus(bobData.dormantId, "active")), {
 			error: "Contact not found",
+		});
+		const named = [{ ids: [bobData.readerId, bobData.dormantId] }, { emails: ["reader1@example.org", "cold@example.org"] }];
+		for (const contacts of named) {
+			for (const change of [{ status: "unsubscribed" }, { status: "active" }, { language: "fr" }]) {
+				const result = await as(alice, () => m.contacts.updateContacts(contacts, change));
+				assert.deepEqual(result, { updated: [], unchanged: [], skipped: [], notFound: contacts.ids ?? contacts.emails }, JSON.stringify(change));
+			}
+		}
+		assert.deepEqual(await as(alice, () => m.contacts.updateContacts({ emails: ["reader1@example.org"], newsletterId: bobData.newsletterId }, { status: "unsubscribed" })), {
+			error: "Newsletter not found",
 		});
 		assert.deepEqual(await snapshot(), before);
 	});
@@ -204,7 +214,13 @@ describe("server actions refuse another account's data", () => {
 		assert.deepEqual(await as(alice, () => m.contacts.findUnreachableContacts({ newsletterId: bobData.newsletterId })), {
 			error: "Newsletter not found",
 		});
-		assert.deepEqual(await as(alice, () => m.contacts.deleteContacts([bobData.readerId, bobData.dormantId])), { deleted: [], kept: [] });
+		const ids = [bobData.readerId, bobData.dormantId];
+		assert.deepEqual(await as(alice, () => m.contacts.deleteContacts({ ids })), { deleted: [], kept: [], notFound: ids });
+		const emails = ["reader1@example.org", "cold@example.org"];
+		assert.deepEqual(await as(alice, () => m.contacts.deleteContacts({ emails })), { deleted: [], kept: [], notFound: emails });
+		assert.deepEqual(await as(alice, () => m.contacts.deleteContacts({ emails, newsletterId: bobData.newsletterId })), {
+			error: "Newsletter not found",
+		});
 		assert.deepEqual(await snapshot(), before);
 	});
 

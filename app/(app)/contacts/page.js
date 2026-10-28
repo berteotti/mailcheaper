@@ -4,15 +4,19 @@ import Link from "next/link";
 import { ChevronLeft, ChevronRight, Users } from "lucide-react";
 import AvatarContact from "@/components/AvatarContact";
 import BadgeStatus from "@/components/BadgeStatus";
+import BarContactSelection from "@/components/BarContactSelection";
 import ButtonExportContacts from "@/components/ButtonExportContacts";
 import CardAddContacts from "@/components/CardAddContacts";
+import CheckboxContact from "@/components/CheckboxContact";
 import DialogAddContact from "@/components/DialogAddContact";
 import DialogCheckContacts from "@/components/DialogCheckContacts";
+import DialogEditContacts from "@/components/DialogEditContacts";
 import DialogImportContacts from "@/components/DialogImportContacts";
 import FilterContacts from "@/components/FilterContacts";
 import GatePlan from "@/components/GatePlan";
 import HeaderPage from "@/components/HeaderPage";
 import MenuContact from "@/components/MenuContact";
+import ProviderContactSelection from "@/components/ProviderContactSelection";
 import StateEmpty from "@/components/StateEmpty";
 import TextEmpty from "@/components/TextEmpty";
 import { Button } from "@/components/ui/button";
@@ -80,6 +84,7 @@ export default async function ContactsPage({ searchParams }) {
 			<HeaderPage title="Contacts">
 				<ButtonExportContacts newsletterId={newsletterId} status={status} query={query} isDisabled={total === 0} />
 				{liveCount > 0 && <DialogCheckContacts newsletter={newsletter} count={liveCount} />}
+				{hasContacts && <DialogEditContacts newsletter={newsletter} newsletterLanguage={getLanguageTag(selected)} />}
 				{hasContacts && <DialogAddContact newsletter={newsletter} />}
 				<GatePlan reason="import">
 					<DialogImportContacts newsletter={newsletter} />
@@ -123,103 +128,115 @@ export default async function ContactsPage({ searchParams }) {
 					</>
 				)}
 
-				{!hasContacts ? (
-					<CardAddContacts newsletter={newsletter} curl={getAddContactCurl(getAppUrl(), selected?.slug)} />
-				) : contacts.length === 0 ? (
-					<StateEmpty icon={Users} title="No contacts match" />
-				) : (
-					<div style={{ "--stagger": 1 }} className="overflow-hidden rounded-xl shadow-border animate-enter">
-						<Table>
-							<TableHeader>
-								<TableRow className="hover:bg-transparent">
-									<TableHead className="pl-4">Contact</TableHead>
-									<TableHead>Status</TableHead>
-									<TableHead className="hidden md:table-cell">Language</TableHead>
-									<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
-									<TableHead className="hidden text-right lg:table-cell">Clicks</TableHead>
-									<TableHead className="hidden text-right sm:table-cell">Added</TableHead>
-									<TableHead className="w-12 pr-2" />
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{contacts.map((contact) => (
-									<TableRow key={contact._id.toString()} className="tabular-nums">
-										<TableCell className="w-full max-w-0 py-2.5 pl-4 font-medium sm:w-2/5">
-											<span className="flex min-w-0 items-center gap-2.5">
-												<AvatarContact
-													email={contact.email}
-													name={contact.firstName ?? contact.lastName}
-													colorHash={contactColorHash(contact.email)}
-													size={26}
-												/>
-												{getName(contact) ? (
-													<span className="flex min-w-0 flex-col">
-														<span className="truncate">{getName(contact)}</span>
-														<span className="truncate text-xs font-normal text-muted-foreground">
-															{contact.email}
-														</span>
-													</span>
-												) : (
-													<span className="truncate">{contact.email}</span>
-												)}
-											</span>
-										</TableCell>
-										<TableCell>
-											<BadgeStatus status={contact.status} />
-										</TableCell>
-										<TableCell className="hidden md:table-cell">
-											{contact.language ? (
-												getLanguageName(getLanguageTag(contact))
-											) : (
-												<span className="text-muted-foreground" title="The newsletter's language">
-													{getLanguageName(getLanguageTag(selected))}
-												</span>
-											)}
-										</TableCell>
-										<TableCell className="hidden text-right lg:table-cell">
-											{engagement(contact, "opens", "openRate")}
-										</TableCell>
-										<TableCell className="hidden text-right lg:table-cell">
-											{engagement(contact, "clicks", "clickRate")}
-										</TableCell>
-										<TableCell className="hidden text-right text-muted-foreground sm:table-cell">
-											{formatDate(contact.subscribedAt) ?? <TextEmpty />}
-										</TableCell>
-										<TableCell className="pr-2 text-right">
-											<MenuContact
-												id={contact._id.toString()}
-												email={contact.email}
-												firstName={contact.firstName}
-												lastName={contact.lastName}
-												status={contact.status}
-												language={getLanguageTag(contact)}
-												newsletterLanguage={getLanguageTag(selected)}
+				<ProviderContactSelection key={`${newsletterId}:${status}:${query}`}>
+					{!hasContacts ? (
+						<CardAddContacts newsletter={newsletter} curl={getAddContactCurl(getAppUrl(), selected?.slug)} />
+					) : contacts.length === 0 ? (
+						<StateEmpty icon={Users} title="No contacts match" />
+					) : (
+						<div style={{ "--stagger": 1 }} className="overflow-hidden rounded-xl shadow-border animate-enter">
+							<Table>
+								<TableHeader>
+									<TableRow className="hover:bg-transparent">
+										<TableHead className="w-10 pr-0 pl-4">
+											<CheckboxContact
+												ids={contacts.map((contact) => contact._id.toString())}
+												label="Select every contact on this page"
 											/>
-										</TableCell>
+										</TableHead>
+										<TableHead>Contact</TableHead>
+										<TableHead>Status</TableHead>
+										<TableHead className="hidden md:table-cell">Language</TableHead>
+										<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
+										<TableHead className="hidden text-right lg:table-cell">Clicks</TableHead>
+										<TableHead className="hidden text-right sm:table-cell">Added</TableHead>
+										<TableHead className="w-12 pr-2" />
 									</TableRow>
-								))}
-							</TableBody>
-						</Table>
-					</div>
-				)}
-
-				{pageCount > 1 && (
-					<div className="flex items-center justify-between gap-3 text-sm text-muted-foreground tabular-nums">
-						<span>
-							{formatNumber((page - 1) * CONTACTS_PAGE_SIZE + 1)}–
-							{formatNumber(Math.min(page * CONTACTS_PAGE_SIZE, total))} of{" "}
-							{formatNumber(total)}
-						</span>
-						<div className="flex gap-1">
-							<PageLink href={href({ page: page - 1 })} isDisabled={page <= 1} label="Previous">
-								<ChevronLeft />
-							</PageLink>
-							<PageLink href={href({ page: page + 1 })} isDisabled={page >= pageCount} label="Next">
-								<ChevronRight />
-							</PageLink>
+								</TableHeader>
+								<TableBody>
+									{contacts.map((contact) => (
+										<TableRow key={contact._id.toString()} className="tabular-nums">
+											<TableCell className="w-10 pr-0 pl-4">
+												<CheckboxContact id={contact._id.toString()} label={`Select ${contact.email}`} />
+											</TableCell>
+											<TableCell className="w-full max-w-0 py-2.5 font-medium sm:w-2/5">
+												<span className="flex min-w-0 items-center gap-2.5">
+													<AvatarContact
+														email={contact.email}
+														name={contact.firstName ?? contact.lastName}
+														colorHash={contactColorHash(contact.email)}
+														size={26}
+													/>
+													{getName(contact) ? (
+														<span className="flex min-w-0 flex-col">
+															<span className="truncate">{getName(contact)}</span>
+															<span className="truncate text-xs font-normal text-muted-foreground">
+																{contact.email}
+															</span>
+														</span>
+													) : (
+														<span className="truncate">{contact.email}</span>
+													)}
+												</span>
+											</TableCell>
+											<TableCell>
+												<BadgeStatus status={contact.status} />
+											</TableCell>
+											<TableCell className="hidden md:table-cell">
+												{contact.language ? (
+													getLanguageName(getLanguageTag(contact))
+												) : (
+													<span className="text-muted-foreground" title="The newsletter's language">
+														{getLanguageName(getLanguageTag(selected))}
+													</span>
+												)}
+											</TableCell>
+											<TableCell className="hidden text-right lg:table-cell">
+												{engagement(contact, "opens", "openRate")}
+											</TableCell>
+											<TableCell className="hidden text-right lg:table-cell">
+												{engagement(contact, "clicks", "clickRate")}
+											</TableCell>
+											<TableCell className="hidden text-right text-muted-foreground sm:table-cell">
+												{formatDate(contact.subscribedAt) ?? <TextEmpty />}
+											</TableCell>
+											<TableCell className="pr-2 text-right">
+												<MenuContact
+													id={contact._id.toString()}
+													email={contact.email}
+													firstName={contact.firstName}
+													lastName={contact.lastName}
+													status={contact.status}
+													language={getLanguageTag(contact)}
+													newsletterLanguage={getLanguageTag(selected)}
+												/>
+											</TableCell>
+										</TableRow>
+									))}
+								</TableBody>
+							</Table>
 						</div>
-					</div>
-				)}
+					)}
+
+					{pageCount > 1 && (
+						<div className="flex items-center justify-between gap-3 text-sm text-muted-foreground tabular-nums">
+							<span>
+								{formatNumber((page - 1) * CONTACTS_PAGE_SIZE + 1)}–
+								{formatNumber(Math.min(page * CONTACTS_PAGE_SIZE, total))} of{" "}
+								{formatNumber(total)}
+							</span>
+							<div className="flex gap-1">
+								<PageLink href={href({ page: page - 1 })} isDisabled={page <= 1} label="Previous">
+									<ChevronLeft />
+								</PageLink>
+								<PageLink href={href({ page: page + 1 })} isDisabled={page >= pageCount} label="Next">
+									<ChevronRight />
+								</PageLink>
+							</div>
+						</div>
+					)}
+					<BarContactSelection newsletterLanguage={getLanguageTag(selected)} />
+				</ProviderContactSelection>
 			</div>
 		</>
 	);

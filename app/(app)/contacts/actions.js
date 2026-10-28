@@ -66,8 +66,28 @@ export async function findUnreachableContacts({ newsletterId, cursor }) {
 	return failure ? toFormError(failure) : output;
 }
 
-export async function deleteContacts(ids) {
-	const { output, failure } = await runDashboardAction("delete_contacts", { ids: Array.isArray(ids) ? ids.map(String) : [] });
+// The contacts picked in the list (ids), or pasted as addresses (emails), which only name the newsletter's.
+function toNamedContacts({ ids, emails, newsletterId }) {
+	return {
+		...(Array.isArray(ids) && { ids: ids.map(String) }),
+		...(Array.isArray(emails) && { emails: emails.map(String) }),
+		...(newsletterId && { newsletter: String(newsletterId) }),
+	};
+}
+
+export async function deleteContacts(contacts = {}) {
+	const { output, failure } = await runDashboardAction("delete_contacts", toNamedContacts(contacts));
+	revalidatePath("/contacts");
+	return failure ? toFormError(failure) : output;
+}
+
+// change: { status } or { language }, null for the newsletter's.
+export async function updateContacts(contacts = {}, { status, language } = {}) {
+	const { output, failure } = await runDashboardAction("update_contacts", {
+		...toNamedContacts(contacts),
+		...(status && { status }),
+		...(language !== undefined && { language }),
+	});
 	revalidatePath("/contacts");
 	return failure ? toFormError(failure) : output;
 }

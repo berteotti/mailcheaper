@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isObjectIdString, isPlainObject, normalizeEmail } from "../lib/validation.js";
+import { isObjectIdString, isPlainObject, normalizeEmail, parseEmailList } from "../lib/validation.js";
 
 test("emails are trimmed and lowercased", () => {
 	const accepted = [
@@ -42,6 +42,19 @@ test("addresses SES can't take as a single recipient are rejected", () => {
 		{},
 	];
 	for (const input of rejected) assert.equal(normalizeEmail(input), null, String(input));
+});
+
+test("a pasted list gives each address once, lowercase, however it's separated", () => {
+	assert.deepEqual(parseEmailList("Ana@Example.org, bo@example.org;cy@example.org\n\tdi@example.org  ana@example.org"), [
+		"ana@example.org",
+		"bo@example.org",
+		"cy@example.org",
+		"di@example.org",
+	]);
+	assert.deepEqual(parseEmailList('"Jane Doe" <jane@example.org>, Sam (sam@example.org)'), ["jane@example.org", "sam@example.org"]);
+	assert.deepEqual(parseEmailList("not an address, and nothing else"), []);
+	assert.deepEqual(parseEmailList(`${"a".repeat(250)}@example.org`), [], "too long to be anyone's");
+	assert.deepEqual(parseEmailList(undefined), []);
 });
 
 test("ObjectId strings are exactly 24 hex characters", () => {

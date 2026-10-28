@@ -78,7 +78,7 @@ export default function DialogCheckContacts({ newsletter, count }) {
 			let deleted = 0;
 			let kept = 0;
 			for (let start = 0; start < ids.length; start += DELETES_PER_CALL) {
-				const result = await deleteContacts(ids.slice(start, start + DELETES_PER_CALL));
+				const result = await deleteContacts({ ids: ids.slice(start, start + DELETES_PER_CALL) });
 				if (result?.error) {
 					toast.error(result.error);
 					break;
