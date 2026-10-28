@@ -142,7 +142,7 @@ Set `APP_DOMAIN` (and optionally `ASSET_DOMAIN`) to subdomains of a zone on the 
 npm run deploy -- --stage prod
 ```
 
-Use a separate env file per stage if their values differ (`--env-file .env.prod`). The deploy:
+Use a separate env file per stage if their values differ (`--env-file .env.prod`): `npm run deploy:prod` deploys prod with `.env.prod`. The deploy:
 
 1. creates or reuses D1, the R2 asset and backup buckets, the jobs queue and its dead-letter queue;
 2. applies new SQL files from `migrations/` to D1, in order and once each (they're recorded in D1), before the new code goes live;
