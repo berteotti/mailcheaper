@@ -177,6 +177,29 @@ describe("per-account events", () => {
 		assert.equal(await getValue("SELECT count(*) FROM events WHERE accountId = ?", [bob.accountId]), 0);
 	});
 
+	test("an address Auto Validation kept SES from sending to is suppressed and its contact bounced, in no bounce rate", async () => {
+		const user = await customer("validated@example.com", "validated");
+		const [message] = await sentMessages(user, 20, (index) => (index === 0 ? { status: "sent", deliveredAt: null } : {}));
+		await execute("UPDATE accounts SET health = '{}' WHERE _id = ?", [user.accountId]);
+		const result = await m.events.handleSesEvent({
+			eventType: "Bounce",
+			mail: { messageId: message.providerMessageId, destination: [message.email], tags: { account_id: [String(user.accountId)], message_id: [String(message._id)] } },
+			bounce: { bounceType: "Permanent", bounceSubType: "EmailValidationSuppressed", bouncedRecipients: [{ emailAddress: message.email }] },
+		});
+		assert.deepEqual(result, { handled: true, messageId: String(message._id) });
+
+		const stored = await getOne("SELECT status, bouncedAt, error, campaignId FROM messages WHERE accountId = ? AND _id = ?", [user.accountId, message._id]);
+		assert.equal(stored.status, "suppressed");
+		assert.equal(stored.bouncedAt, null);
+		assert.equal(stored.error, "Not sent, the mailbox likely doesn't exist: EmailValidationSuppressed");
+		assert.equal(await getValue("SELECT status FROM contacts WHERE accountId = ? AND _id = ?", [user.accountId, message.contactId]), "bounced");
+		assert.equal(await getValue("SELECT reason FROM suppressions WHERE accountId = ? AND email = ?", [user.accountId, message.email]), "bounce");
+		const bounced = "SELECT coalesce(json_extract(stats, '$.bounced'), 0) FROM campaigns WHERE accountId = ? AND _id = ?";
+		assert.equal(await getValue(bounced, [user.accountId, stored.campaignId]), 0);
+		const { health } = await findAccount(user.accountId);
+		assert.deepEqual([health.sent, health.bounceRate], [20, 0]);
+	});
+
 	test("bounces over 7 days warn the owner at the pause level, and block the account at the block level", async () => {
 		const user = await customer("bouncy@example.com", "bouncy");
 		const messages = await sentMessages(user, 600, (index) => (index < 12 ? { bouncedAt: Date.now(), status: "bounced" } : {}));

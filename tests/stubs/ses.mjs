@@ -7,6 +7,7 @@ export const platformSent = [];
 export const calls = [];
 export const state = {
 	configurationSets: new Set(),
+	autoValidation: new Set(),
 	tenants: new Map(),
 	identities: new Map(),
 	associations: new Map(),
@@ -60,6 +61,14 @@ export async function getSesAccount() {
 export async function createConfigurationSet(name) {
 	call("createConfigurationSet", name);
 	state.configurationSets.add(name);
+}
+
+export async function enableAutoValidation(configurationSet) {
+	call("enableAutoValidation", configurationSet);
+	if (!state.configurationSets.has(configurationSet)) {
+		throw Object.assign(new Error(`Configuration set <${configurationSet}> does not exist`), { name: "NotFoundException" });
+	}
+	state.autoValidation.add(configurationSet);
 }
 
 export async function createTenant(name, { accountId }) {

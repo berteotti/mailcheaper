@@ -110,6 +110,34 @@ describe("SES tenants", () => {
 		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
 		assert.equal(sent.at(-1).tenantName, `mc-${user.accountId}`);
 	});
+
+	test("Auto Validation goes on once; a failure leaves emails going out and is tried again an hour later", async () => {
+		const user = await signIn("auto-validation@example.com");
+		await activate(user);
+		const name = `mc-${user.accountId}`;
+		const enabling = () => calls.filter((call) => call.name === "enableAutoValidation" && call.args === name).length;
+		const emailsBefore = platformEmails.length;
+		state.failNext = { name: "enableAutoValidation", error: new Error("Not authorized to perform ses:PutConfigurationSetSuppressionOptions") };
+		await createNewsletter(user, "auto-validation");
+		const id = await draft(user);
+		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true }, "the email goes out without it");
+		assert.equal(enabling(), 1, "the newsletter's domain tried once, the send waits for the hour");
+		const failed = (await findAccount(user.accountId)).ses;
+		assert.equal(failed.autoValidationAt, undefined);
+		assert.ok(failed.autoValidationFailedAt);
+		assert.equal(state.autoValidation.has(name), false);
+		const alert = platformEmails.slice(emailsBefore).find(({ subject }) => subject === "[MailCheap] SES Auto Validation not enabled");
+		assert.deepEqual(alert.to, ["admin@example.com"]);
+		assert.match(alert.text, /ses:PutConfigurationSetSuppressionOptions/);
+
+		const hourAgo = new Date(Date.now() - 61 * 60_000).toISOString();
+		await execute("UPDATE accounts SET ses = json_set(ses, '$.autoValidationFailedAt', ?) WHERE _id = ?", [hourAgo, user.accountId]);
+		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
+		assert.ok(state.autoValidation.has(name));
+		assert.ok((await findAccount(user.accountId)).ses.autoValidationAt);
+		assert.deepEqual(await as(user, () => m.campaigns.sendTestCampaign(id)), { ok: true });
+		assert.equal(enabling(), 2, "on for good");
+	});
 });
 
 describe("from addresses", () => {

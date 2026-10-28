@@ -110,7 +110,7 @@ export default function DialogCheckContacts({ newsletter, count }) {
 						{isChecking
 							? "Looking for addresses that can't get email: invalid ones, misspelled domains and domains that can't receive email."
 							: found.length === 0
-								? `All ${formatNumber(checked)} addresses can get email.`
+								? `No problems found in ${formatNumber(checked)} addresses. A mailbox that doesn't exist only shows when an email to it bounces, and MailCheap stops emailing it then.`
 								: `${formatNumber(found.length)} of ${formatNumber(checked)} can't get email. Emails to them bounce, and bounces count against your account.`}
 					</DialogDescription>
 				</DialogHeader>

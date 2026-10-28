@@ -48,6 +48,7 @@ MailCheap is the rest of what a newsletter needs, in one Next.js app on Cloudfla
 **Keep it healthy**
 
 - Bounce and complaint handling, and a suppression list per account.
+- On SES, Auto Validation: SES checks each address as it's sent and sends nothing to a mailbox that likely doesn't exist. MailCheap suppresses the address like a hard bounce, without counting it in the bounce rates. SES charges $0.01 per 1,000 addresses checked.
 - A send pauses past 2% hard bounces (at least 5) or 0.08% complaints (at least 2), and its owner gets an email and can resume it. One complaint alone never stops anything.
 - Clear abuse blocks the whole account until an admin unblocks it: a send, a first send's slice or the last 7 days past 5% hard bounces (at least 10) or 0.3% complaints (at least 3), a spam trap hit, or the email provider stopping the account. Nothing goes out while it's blocked, welcome emails included, and the tracked links in its emails show a page saying they're disabled instead of redirecting; unsubscribe and confirmation links keep working.
 - On MailCheap Cloud, a new account's campaigns go out over 24, 16 and 12 hours, then 8, for its first 30 days. One account per inbox (jane.doe+2@gmail.com is jane.doe@gmail.com), no throwaway inboxes, and 3 new accounts a day per IP address.
@@ -189,6 +190,7 @@ Use one AWS region for everything below (the examples use `us-east-1`). An AWS a
         "ses:UpdateReputationEntityCustomerManagedStatus",
         "ses:CreateConfigurationSet",
         "ses:CreateConfigurationSetEventDestination",
+        "ses:PutConfigurationSetSuppressionOptions",
         "ses:DeleteConfigurationSet",
         "ses:CreateEmailIdentity",
         "ses:GetEmailIdentity",
@@ -201,6 +203,7 @@ Use one AWS region for everything below (the examples use `us-east-1`). An AWS a
 }
 ```
 
+`ses:PutConfigurationSetSuppressionOptions` turns on Auto Validation for each account. An install set up before it needs it added: until then, emails go out without Auto Validation and the admins get an alert.
 4. **Add the variables to `.env`** and deploy again: `SES_REGION`, `SES_ACCESS_KEY_ID`, `SES_SECRET_ACCESS_KEY`, `SES_AWS_ACCOUNT_ID` (the 12-digit account ID) and `SES_SNS_TOPIC_ARN`. Each account's configuration set publishes its events to that topic.
 5. **Optional: tenant pauses.** SES pauses tenants that send badly. To block the account in MailCheap too, send SES's tenant status and reputation finding events from EventBridge to a second SNS topic, subscribe `https://<your-app>/api/webhooks/ses-tenants` to it, and set `SES_TENANT_SNS_TOPIC_ARN`.
 

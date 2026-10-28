@@ -73,6 +73,28 @@ test("hard bounces suppress the bounced address and mark contacts bounced", () =
 	assert.equal(plan.error, "Hard bounce: General, smtp; 550 5.1.1 unknown");
 });
 
+test("an address Auto Validation kept SES from sending to is suppressed like a hard bounce, but nothing bounced", () => {
+	const plan = getSesEventPlan(
+		sesEvent("Bounce", {
+			bounceType: "Permanent",
+			bounceSubType: "EmailValidationSuppressed",
+			bouncedRecipients: [{ emailAddress: "reader@example.com" }],
+		})
+	);
+	assert.deepEqual(plan.firsts, [], "no bouncedAt: the bounce rates don't count it");
+	assert.deepEqual(plan.status, { to: "suppressed", from: ["queued", "sent"] });
+	assert.deepEqual(plan.suppression, {
+		emails: ["reader@example.com"],
+		reason: "bounce",
+		detail: "Permanent/EmailValidationSuppressed",
+		contactStatus: "bounced",
+		contactStatusFrom: ["active", "dormant", "unsubscribed"],
+	});
+	assert.equal(plan.error, "Not sent, the mailbox likely doesn't exist: EmailValidationSuppressed");
+	assert.equal(plan.isSpamTrap, false);
+	assert.equal(plan.isRecorded, true);
+});
+
 test("soft bounces only record the reason", () => {
 	for (const bounceType of ["Transient", "Undetermined"]) {
 		const plan = getSesEventPlan(
