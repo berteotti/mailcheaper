@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { test } from "node:test";
+import { POST as postSesWebhook } from "../app/api/webhooks/ses/route.js";
 import {
 	buildSigningString,
 	createSnsVerifier,
 	isValidSigningCertUrl,
 	isValidSubscribeUrl,
 } from "../lib/sns.js";
+import { env } from "./helpers/bindings.mjs";
+import { database } from "./helpers/d1.mjs";
 
 const { privateKey, publicKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
 const publicKeyPem = publicKey.export({ type: "spki", format: "pem" });
@@ -42,6 +45,19 @@ function signMessage(message, signatureVersion = "2", key = privateKey) {
 		.update(buildSigningString(unsigned))
 		.sign(key, "base64");
 	return { ...unsigned, Signature: signature };
+}
+
+// Like fetch on Workers: redirect "error" throws, and a redirect comes back as it is. Unknown URLs redirect.
+function mockWorkersFetch(t, responses) {
+	const requests = [];
+	t.mock.method(globalThis, "fetch", async (input, init = {}) => {
+		const redirect = init.redirect ?? "follow";
+		if (!["follow", "manual"].includes(redirect)) throw new TypeError('Invalid redirect value, must be one of "follow" or "manual"');
+		const url = String(input);
+		requests.push({ url, redirect });
+		return responses[url]?.() ?? new Response(null, { status: 302, headers: { Location: "https://example.com/elsewhere" } });
+	});
+	return requests;
 }
 
 function createTestVerifier() {
@@ -185,4 +201,38 @@ test("certificates are cached per URL and failed downloads are retried", async (
 test("a certificate download that isn't PEM is rejected", async () => {
 	const verify = createSnsVerifier({ fetchCertificate: async () => "<html>Not found</html>" });
 	assert.equal(await verify(signMessage(notification)), false);
+});
+
+test("certificates download through Workers' fetch, and one behind a redirect is refused", async (t) => {
+	const requests = mockWorkersFetch(t, { [CERT_URL]: () => new Response(publicKeyPem) });
+	const verify = createSnsVerifier();
+	const redirected = "https://sns.eu-central-1.amazonaws.com/SimpleNotificationService-9c6465fa7f48f5cacd23014631ec1136.pem";
+
+	assert.equal(await verify(signMessage(notification)), true);
+	assert.equal(await verify(signMessage({ ...notification, SigningCertURL: redirected })), false);
+	assert.deepEqual(requests, [{ url: CERT_URL, redirect: "manual" }, { url: redirected, redirect: "manual" }]);
+});
+
+test("the SES webhook confirms its subscription and stores each event as a job, on Workers' fetch", async (t) => {
+	const requests = mockWorkersFetch(t, {
+		[CERT_URL]: () => new Response(publicKeyPem),
+		[confirmation.SubscribeURL]: () => new Response("<ConfirmSubscriptionResponse/>"),
+	});
+	const db = database(t);
+	env.JOBS_QUEUE = { async sendBatch() {} };
+	process.env.SES_SNS_TOPIC_ARN = TOPIC_ARN;
+	t.after(() => {
+		delete env.JOBS_QUEUE;
+		delete process.env.SES_SNS_TOPIC_ARN;
+	});
+	t.mock.method(console, "log", () => {});
+	const post = (message) => postSesWebhook(new Request("https://mail.example.com/api/webhooks/ses", { method: "POST", body: JSON.stringify(message) }));
+
+	assert.equal((await post(signMessage(confirmation))).status, 200);
+	assert.ok(requests.some(({ url, redirect }) => url === confirmation.SubscribeURL && redirect === "manual"));
+
+	assert.equal((await post(signMessage(notification))).status, 200);
+	const job = db.sqlite.prepare("SELECT kind, payload FROM job_outbox WHERE _id = ?").get(`ses-event:${notification.MessageId}`);
+	assert.equal(job.kind, "ses-event");
+	assert.equal(JSON.parse(job.payload).eventType, "Delivery");
 });
