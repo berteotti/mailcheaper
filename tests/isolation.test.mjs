@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { accountIdOf, getAll, getOne, getValue } from "../lib/db.js";
+import { LINK_CLICK_EVENT, toLinkClick } from "../lib/link-stats.js";
 import { insertRow } from "../lib/records.js";
-import { activate, anonymous, as, callApi, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
+import { activate, anonymous, as, callApi, catchNotFound, catchRedirect, form, signIn, startTestApp } from "./helpers/app.mjs";
 import { flushAfter } from "./stubs/next-server.mjs";
 import { sent as sesEmails } from "./stubs/ses.mjs";
 
@@ -71,6 +72,10 @@ before(async () => {
 		campaignQueries: await import("../lib/campaign-queries.js"),
 		apiKeyQueries: await import("../lib/api-keys.js"),
 		usage: await import("../lib/usage.js"),
+		campaignPage: await import("../app/(app)/campaigns/[id]/page.js"),
+		campaignLinks: await import("../lib/campaign-links.js"),
+		campaignRecipients: await import("../lib/campaign-recipients.js"),
+		campaignReport: await import("../lib/campaign-report.js"),
 	};
 
 	alice = await signIn("alice@example.com");
@@ -315,6 +320,53 @@ describe("API routes stay inside the key's account", () => {
 			body: { newsletter: "bob-weekly", email: "x@example.net" },
 		});
 		assert.equal(unknown.status, 401);
+	});
+});
+
+describe("campaign reports stay inside the account", () => {
+	test("the report, its links and its recipients: through the API, the page and their queries", async () => {
+		const reader = await getOne("SELECT * FROM contacts WHERE accountId = ? AND _id = ?", [bob.accountId, bobData.readerId]);
+		const at = new Date();
+		const message = await insertRow("messages", {
+			accountId: bob.accountId,
+			newsletterId: bobData.newsletterId,
+			campaignId: bobData.campaignId,
+			contactId: reader._id,
+			kind: "campaign",
+			email: reader.email,
+			status: "delivered",
+			sentAt: at,
+			deliveredAt: at,
+			openedAt: at,
+			clickedAt: at,
+		});
+		await insertRow("events", {
+			accountId: bob.accountId,
+			type: LINK_CLICK_EVENT,
+			messageId: message._id,
+			campaignId: bobData.campaignId,
+			occurredAt: at,
+			data: toLinkClick("https://example.com/bob"),
+		});
+
+		for (const path of ["report", "recipients"]) {
+			assert.equal((await callApi("GET", `/api/v1/campaigns/${bobData.campaignId}/${path}`, { key: alice.apiKey })).status, 404, path);
+		}
+		const page = as(alice, () => m.campaignPage.default({ params: Promise.resolve({ id: bobData.campaignId }), searchParams: Promise.resolve({}) }));
+		assert.equal(await catchNotFound(page), true, "the campaign's page");
+
+		const aliceAccount = { _id: alice.accountId };
+		const named = { _id: bobData.campaignId, accountId: alice.accountId, newsletterId: bobData.newsletterId, startedAt: at };
+		assert.deepEqual((await m.campaignRecipients.listCampaignRecipients(aliceAccount, named, { limit: 50 })).recipients, []);
+		assert.equal((await m.campaignRecipients.countCampaignRecipients(aliceAccount, named)).all, 0);
+		assert.deepEqual(await m.campaignLinks.findCampaignLinks(named), { clickers: 0, isComplete: false, countedSince: null, links: [] });
+		const activity = await m.campaignReport.getCampaignActivity(named);
+		assert.deepEqual([activity.providers, activity.recipients.all], [[], 0]);
+		assert.ok(activity.timeline.hours.every(({ opens, clicks }) => opens === 0 && clicks === 0));
+
+		const own = { _id: bobData.campaignId, accountId: bob.accountId };
+		assert.equal((await m.campaignRecipients.countCampaignRecipients({ _id: bob.accountId }, own)).all, 1, "Bob's own report has them");
+		assert.equal((await m.campaignLinks.findCampaignLinks(own)).links.length, 1);
 	});
 });
 
