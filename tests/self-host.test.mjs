@@ -243,7 +243,7 @@ describe("sign-in allowlist", () => {
 		assert.deepEqual(allowed, { status: 302, path: "/", error: null, isSignedIn: true });
 		const user = await getOne("SELECT * FROM users WHERE email = ?", ["google@team.example.org"]);
 		assert.equal(user.emailVerified, true);
-		assert.ok(await getOne("SELECT _id FROM accounts WHERE ownerId = ?", [user.id]), "the account comes with the user");
+		assert.ok(await getOne("SELECT role FROM members WHERE userId = ? AND role = 'owner'", [user.id]), "the organization comes with the user");
 	});
 
 	test("Google: an address Google hasn't verified neither signs up nor joins the user who owns it", async () => {

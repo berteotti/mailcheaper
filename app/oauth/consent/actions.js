@@ -7,6 +7,7 @@ import { notifyActivity } from "@/lib/alerts";
 import { getAuth, getCurrentAccount } from "@/lib/auth";
 import { answerConsent } from "@/lib/oauth";
 import { isExpiredOAuthQuery, readOAuthQuery, readOAuthQueryField } from "@/lib/oauth-rules";
+import { INVITATIONS_PATH } from "@/lib/organizations";
 
 const EXPIRED_MESSAGE = "This request expired. Go back to the app and connect MailCheap again.";
 
@@ -16,6 +17,7 @@ export async function answerConsentRequest(_state, formData) {
 	if (!query) return { error: EXPIRED_MESSAGE };
 	const current = await getCurrentAccount();
 	if (!current) redirect(`/signin?${query}`);
+	if (!current.account) redirect(INVITATIONS_PATH);
 	if (isDeletionPending(current.account)) redirect("/restore");
 	const accept = formData.get("decision") === "allow";
 	let url;

@@ -11,6 +11,7 @@ import { hasActiveSubscription } from "@/lib/account-state";
 import { requireAccount } from "@/lib/auth";
 import { isCloud } from "@/lib/config";
 import { getRecommendedPlanId } from "@/lib/onboarding";
+import { isOwner } from "@/lib/organizations";
 import { isOnFreePlan, readInterval } from "@/lib/plans";
 import { getUsage } from "@/lib/usage";
 import { cn } from "@/lib/utils";
@@ -21,13 +22,14 @@ export const metadata = { title: "Billing" };
 // one, on the account's plan, marked. A free plan subscribes through Checkout like no plan; a paid plan's changes are
 // confirmed on Stripe.
 export default async function BillingPage({ searchParams }) {
-	const { account } = await requireAccount();
+	const { account, member } = await requireAccount();
 	if (!isCloud()) return <PageBillingOff />;
 	const params = await searchParams;
 	const isActive = hasActiveSubscription(account);
 	if (isActive && params.checkout === "pending") redirect("/");
 	const interval = readInterval(params.interval ?? account.interval);
-	const notice = getNotice({ account, isActive, ...params });
+	const canPay = isOwner(member);
+	const notice = getNotice({ account, isActive, canPay, ...params });
 
 	if (!isActive) {
 		return (
@@ -52,7 +54,7 @@ export default async function BillingPage({ searchParams }) {
 	return (
 		<>
 			<HeaderPage title="Billing">
-				{account.stripeCustomerId && (
+				{account.stripeCustomerId && canPay && (
 					<form action={openBillingPortal}>
 						<Button type="submit" variant="outline">
 							<CreditCard data-icon="inline-start" />
@@ -93,7 +95,8 @@ function PageBillingOff() {
 	);
 }
 
-function getNotice({ account, isActive, checkout, error }) {
+function getNotice({ account, isActive, canPay, checkout, error }) {
+	if (error === "owner" || (!canPay && !checkout)) return { tone: "info", text: "Only the organization's owners change its plan. Ask one of them." };
 	if (error === "stripe") return { tone: "error", text: "Stripe can't be reached right now. Try again in a minute." };
 	if (error === "rate_limited") return { tone: "error", text: "You opened Stripe too many times in the last hour. Try again later." };
 	if (checkout === "pending") return { tone: "info", text: "Payment received. Your plan turns on in a few seconds." };

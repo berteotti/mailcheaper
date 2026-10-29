@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { hasActiveSubscription } from "@/lib/account-state";
 import { runDashboardAction, toBillingError } from "@/lib/actions/dashboard";
 import { getCurrentAccount } from "@/lib/auth";
+import { INVITATIONS_PATH } from "@/lib/organizations";
 import { getPlan, isOnFreePlan, readInterval } from "@/lib/plans";
 
 // The plans slider's Subscribe link, on the public pages, the paywall and billing: Stripe Checkout for that plan.
@@ -13,6 +14,7 @@ export async function GET(request) {
 	const interval = readInterval(url.searchParams.get("interval"));
 	const current = await getCurrentAccount();
 	if (!current) redirect(`/signin?next=${encodeURIComponent(`${url.pathname}${url.search}`)}`);
+	if (!current.account) redirect(INVITATIONS_PATH);
 	if (!plan || (hasActiveSubscription(current.account) && !isOnFreePlan(current.account))) redirect(`/billing?interval=${interval}`);
 
 	const { output, failure } = await runDashboardAction("change_plan", { plan: plan.id, interval });

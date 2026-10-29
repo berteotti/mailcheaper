@@ -11,6 +11,7 @@ import { getCurrentAccount } from "@/lib/auth";
 import { isCloud } from "@/lib/config";
 import { readOAuthRequest } from "@/lib/oauth";
 import { isLoopbackRedirect } from "@/lib/oauth-rules";
+import { INVITATIONS_PATH } from "@/lib/organizations";
 
 export const metadata = { title: "Connect an app" };
 
@@ -27,6 +28,7 @@ export default async function ConsentPage({ searchParams }) {
 	if (!oauthRequest || oauthRequest.isExpired) return <Expired />;
 	const current = await getCurrentAccount();
 	if (!current) redirect(`/signin?${oauthRequest.query}`);
+	if (!current.account) redirect(INVITATIONS_PATH);
 	if (isDeletionPending(current.account)) redirect("/restore");
 
 	const { client, query, redirectUri, scopes } = oauthRequest;
@@ -69,6 +71,7 @@ export default async function ConsentPage({ searchParams }) {
 						<p className="min-w-0 truncate text-sm">
 							<span className="text-muted-foreground">Signed in as </span>
 							<span className="font-medium">{current.user.email}</span>
+							<span className="text-muted-foreground"> in {current.organization.name}</span>
 						</p>
 						<ButtonSignout className="shrink-0">Switch</ButtonSignout>
 					</form>

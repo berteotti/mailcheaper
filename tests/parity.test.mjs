@@ -9,8 +9,9 @@ import { activate, anonymous, as, form, signIn, startTestApp } from "./helpers/a
 // dashboard's server actions may only run registered actions, so the dashboard can't drift from the API.
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const DASHBOARD_DIRECTORIES = ["app/(app)", "app/(account)"];
-// The signed-in user's own profile and account deletion, like sign-in: no API key or connected app may reach them.
-const USER_ACTION_FILES = new Set(["app/(account)/account/actions.js"]);
+// The signed-in user's own profile, and their organization's people and deletion, like sign-in: no API key or
+// connected app may reach them.
+const USER_ACTION_FILES = new Set(["app/(account)/account/actions.js", "app/(account)/organization/actions.js"]);
 // Which newsletter the dashboard shows is its own state, a cookie the API has no use for: its actions may read it
 // (lib/selected-newsletter.js), and switching it is the one action that runs nothing of the API's.
 const ALLOWED_IMPORTS = new Set(["next/cache", "next/navigation", "@/lib/actions/dashboard", "@/lib/selected-newsletter"]);

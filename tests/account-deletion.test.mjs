@@ -11,8 +11,8 @@ import { dnsRecords } from "./stubs/dns-broker.mjs";
 
 // Deleting an account from its page, through the real actions and the purge job, with the outbox, SES and R2 in
 // memory: what blocks it, the code it takes, what stops at once, restoring it, and what the purge removes and keeps.
-const DELETION_SUBJECT = /^(\d{6}) is your code to delete your MailCheap account$/;
-const BLOCKED = { error: "Your account can't be deleted yet. This page says what to do first." };
+const DELETION_SUBJECT = /^(\d{6}) is your code to delete your MailCheap organization$/;
+const BLOCKED = { error: "Your organization can't be deleted yet. This page says what to do first." };
 const WRONG_CODE = { error: "This code is wrong or expired" };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
@@ -22,14 +22,14 @@ let app;
 let m;
 
 async function sendCode(user) {
-	assert.deepEqual(await as(user, () => m.account.sendDeletionCode()), { sent: true });
+	assert.deepEqual(await as(user, () => m.organization.sendDeletionCode()), { sent: true });
 	const { subject } = platformEmails.findLast(({ to, subject }) => to.includes(user.email) && DELETION_SUBJECT.test(subject));
 	return DELETION_SUBJECT.exec(subject)[1];
 }
 
 // The action's answer, or where it sent the browser.
 function deleteWith(user, fields) {
-	return as(user, () => m.account.deleteAccount(null, form({ email: user.email, ...fields }))).catch((error) => {
+	return as(user, () => m.organization.deleteOrganization(null, form({ email: user.email, ...fields }))).catch((error) => {
 		if (error instanceof RedirectError) return { redirect: error.url };
 		throw error;
 	});
@@ -209,7 +209,7 @@ const hasObject = (key) => bindings.ASSETS_BUCKET.objects.has(key);
 before(async () => {
 	app = await startTestApp();
 	m = {
-		account: await import("../app/(account)/account/actions.js"),
+		organization: await import("../app/(account)/organization/actions.js"),
 		restore: await import("../app/restore/actions.js"),
 		signin: await import("../app/signin/actions.js"),
 		newsletters: await import("../app/(app)/newsletters/actions.js"),
@@ -241,7 +241,7 @@ describe("what blocks a deletion", () => {
 			const blockers = await m.deletion.getDeletionBlockers(user.account);
 			assert.deepEqual({ hasPlan: blockers.hasPlan, campaigns: blockers.campaigns.length }, { hasPlan: true, campaigns: 0 }, subscriptionStatus);
 			const emails = platformEmails.length;
-			assert.deepEqual(await as(user, () => m.account.sendDeletionCode()), BLOCKED, subscriptionStatus);
+			assert.deepEqual(await as(user, () => m.organization.sendDeletionCode()), BLOCKED, subscriptionStatus);
 			assert.equal(platformEmails.length, emails, "no code sent");
 			assert.deepEqual(await deleteWith(user, { code: codeBeforePlan }), BLOCKED, subscriptionStatus);
 		}
@@ -266,7 +266,7 @@ describe("what blocks a deletion", () => {
 		const blockers = await m.deletion.getDeletionBlockers(user.account);
 		assert.equal(blockers.hasPlan, false);
 		assert.deepEqual(blockers.campaigns.map(({ subject, status }) => `${subject}: ${status}`).sort(), ["Going out: sending", "Next week: scheduled"]);
-		assert.deepEqual(await as(user, () => m.account.sendDeletionCode()), BLOCKED);
+		assert.deepEqual(await as(user, () => m.organization.sendDeletionCode()), BLOCKED);
 
 		await activate(user);
 		assert.deepEqual(await as(user, () => m.campaigns.pauseCampaign(sending)), { ok: true });
@@ -316,7 +316,7 @@ describe("the confirmation", () => {
 		assert.deepEqual(await deleteWith(user, { code }), WRONG_CODE, "dead after 3 wrong tries");
 		await sendCode(user);
 		await sendCode(user);
-		assert.deepEqual(await as(user, () => m.account.sendDeletionCode()), { error: "Too many codes. Try again in 15 minutes." });
+		assert.deepEqual(await as(user, () => m.organization.sendDeletionCode()), { error: "Too many codes. Try again in 15 minutes." });
 	});
 
 	test("isn't an action, so no API key or connected app can delete an account or change its profile", () => {

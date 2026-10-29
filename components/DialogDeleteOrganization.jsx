@@ -3,7 +3,7 @@
 import { useActionState, useState, useTransition } from "react";
 import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { deleteAccount, sendDeletionCode } from "@/app/(account)/account/actions";
+import { deleteOrganization, sendDeletionCode } from "@/app/(account)/organization/actions";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -20,26 +20,26 @@ import { Label } from "@/components/ui/label";
 
 const CODE_PATTERN = /^\d{6}$/;
 
-export default function DialogDeleteAccount({ email, graceDays, isDisabled }) {
+export default function DialogDeleteOrganization({ name, email, graceDays, isDisabled }) {
 	return (
 		<Dialog>
 			<DialogTrigger asChild>
 				<Button type="button" variant="destructive" disabled={isDisabled}>
-					Delete account
+					Delete organization
 				</Button>
 			</DialogTrigger>
 			<DialogContent className="sm:max-w-md">
-				<StepsDelete email={email} graceDays={graceDays} />
+				<StepsDelete name={name} email={email} graceDays={graceDays} />
 			</DialogContent>
 		</Dialog>
 	);
 }
 
 // Inside the dialog's content, which unmounts on close: each opening starts from the first step.
-function StepsDelete({ email, graceDays }) {
+function StepsDelete({ name, email, graceDays }) {
 	const [isCodeSent, setIsCodeSent] = useState(false);
 	const [isSending, startSending] = useTransition();
-	const [state, action, isDeleting] = useActionState(deleteAccount, null);
+	const [state, action, isDeleting] = useActionState(deleteOrganization, null);
 	const [code, setCode] = useState("");
 	const [typedEmail, setTypedEmail] = useState("");
 	const isConfirmed = CODE_PATTERN.test(code.replace(/\s/g, "")) && typedEmail.trim().toLowerCase() === email.toLowerCase();
@@ -57,13 +57,15 @@ function StepsDelete({ email, graceDays }) {
 		return (
 			<>
 				<DialogHeader>
-					<DialogTitle>Delete your account?</DialogTitle>
+					<DialogTitle>Delete {name}?</DialogTitle>
 					<DialogDescription>
-						It stops at once: you&apos;re signed out everywhere, API keys and connected apps stop working, and nothing more is sent.
+						It stops at once: everyone in it is signed out everywhere, API keys and connected apps stop working, and nothing more is
+						sent.
 					</DialogDescription>
 				</DialogHeader>
 				<p className="text-sm text-pretty text-muted-foreground">
-					In {graceDays} days, its newsletters, contacts, campaigns and images are deleted for good. Sign in before then to restore it.
+					In {graceDays} days, its newsletters, contacts, campaigns and images are deleted for good, with its members&apos; sign-ins.
+					An owner who signs in before then can restore it.
 				</p>
 				<DialogFooter>
 					<DialogClose asChild>
@@ -135,7 +137,7 @@ function StepsDelete({ email, graceDays }) {
 					</Button>
 				</DialogClose>
 				<Button type="submit" variant="destructive" disabled={!isConfirmed || isDeleting} className="min-w-32">
-					{isDeleting ? <Loader2 className="animate-spin" /> : "Delete account"}
+					{isDeleting ? <Loader2 className="animate-spin" /> : "Delete organization"}
 				</Button>
 			</DialogFooter>
 		</form>

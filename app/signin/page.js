@@ -59,12 +59,12 @@ export default async function SigninPage({ searchParams }) {
 	);
 }
 
-// Only what changes what to do: an app connecting, an expired link, an account just deleted, or a server that lets
+// Only what changes what to do: an app connecting, an expired link, an organization just deleted, or a server that lets
 // few emails in.
 function getIntro(oauthRequest, isDeleted) {
 	if (oauthRequest?.isExpired) return "This sign-in link expired. Go back to the app and connect MailCheap again.";
 	if (oauthRequest) return `${oauthRequest.client.name} wants to connect to your MailCheap account. Sign in first.`;
-	if (isDeleted) return `Your account is deleted. Sign in within ${DELETION_GRACE_DAYS} days to restore it.`;
+	if (isDeleted) return `Your organization is deleted. Sign in within ${DELETION_GRACE_DAYS} days to restore it.`;
 	if (!isCloud()) return "Only the emails this server allows can sign in.";
 	return null;
 }

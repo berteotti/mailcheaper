@@ -41,6 +41,12 @@ export default function TableAccounts({ accounts }) {
 							<TableRow key={account._id} className="tabular-nums">
 								<TableCell className="max-w-0 py-2.5 pl-4 sm:w-1/4">
 									<span className="block truncate font-medium">{account.ownerEmail ?? <TextEmpty />}</span>
+									{account.organizationName && (
+										<span className="block truncate text-xs text-muted-foreground">
+											{account.organizationName}
+											{account.memberCount > 1 && ` · ${account.memberCount} people`}
+										</span>
+									)}
 									{blockedBy && (
 										<span className="block truncate text-xs text-red-600 dark:text-red-400" title={account.pauseReason}>
 											{blockedBy}

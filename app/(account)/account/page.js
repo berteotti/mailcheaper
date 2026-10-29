@@ -1,31 +1,23 @@
 import Link from "next/link";
-import { ArrowUpRight, CreditCard, Lock, Send } from "lucide-react";
-import { openBillingPortal } from "@/app/(account)/billing/actions";
+import { Lock } from "lucide-react";
 import AvatarUser from "@/components/AvatarUser";
-import BadgeStatus from "@/components/BadgeStatus";
 import CardSettings, { RowSettings } from "@/components/CardSettings";
-import { getPlanDetails } from "@/components/CardSubscription";
-import DialogDeleteAccount from "@/components/DialogDeleteAccount";
 import FormProfile from "@/components/FormProfile";
 import HeaderPage from "@/components/HeaderPage";
 import LayoutNarrow from "@/components/LayoutNarrow";
-import RowBlocker from "@/components/RowBlocker";
 import { Button } from "@/components/ui/button";
-import { DELETION_GRACE_DAYS, getDeletionBlockers } from "@/lib/account-deletion";
-import { getAccountStatus, hasActiveSubscription } from "@/lib/account-state";
 import { hasGoogleSignIn } from "@/lib/accounts";
 import { requireAccount } from "@/lib/auth";
-import { isCloud } from "@/lib/config";
-import { formatDate } from "@/lib/format";
-import { getAccountPlan } from "@/lib/plans";
 import { MAX_NAME_LENGTH } from "@/lib/profile";
 
 export const metadata = { title: "Account" };
 
-// The whole account, apart from any newsletter: who signs in, billing, and deleting it.
+const ROLE_LABELS = { owner: "Owner", member: "Member" };
+
+// The signed-in person: their name, photo and email. What concerns the whole organization is on its page.
 export default async function AccountPage() {
-	const { user, account } = await requireAccount();
-	const [blockers, hasGoogle] = await Promise.all([getDeletionBlockers(account), hasGoogleSignIn(user.id)]);
+	const { user, organization, member } = await requireAccount();
+	const hasGoogle = await hasGoogleSignIn(user.id);
 
 	return (
 		<LayoutNarrow>
@@ -40,83 +32,23 @@ export default async function AccountPage() {
 						</span>
 					</RowSettings>
 				</CardSettings>
-				{isCloud() && <CardBilling account={account} />}
-				<CardDelete email={user.email} blockers={blockers} cancelAt={account.cancelAt} />
-			</div>
-		</LayoutNarrow>
-	);
-}
-
-function CardBilling({ account }) {
-	const isActive = hasActiveSubscription(account);
-	const details = isActive ? getPlanDetails(account) : [];
-
-	return (
-		<CardSettings
-			title="Billing"
-			stagger={2}
-			action={
-				<Button asChild variant="outline" size="sm">
-					<Link href="/billing">{isActive ? "Manage billing" : "Pick a plan"}</Link>
-				</Button>
-			}
-		>
-			<RowSettings label="Plan">
-				<span className="flex min-h-9 flex-wrap items-center gap-x-2.5 gap-y-1">
-					<span className="text-sm font-medium">{isActive ? (getAccountPlan(account)?.name ?? "Your plan") : "No plan"}</span>
-					{(isActive || account.subscriptionStatus) && <BadgeStatus status={getAccountStatus(account)} />}
-					{details.length > 0 && <span className="text-sm text-muted-foreground tabular-nums">{details.join(" · ")}</span>}
-				</span>
-			</RowSettings>
-		</CardSettings>
-	);
-}
-
-function CardDelete({ email, blockers, cancelAt }) {
-	return (
-		<CardSettings title="Delete account" stagger={3} className="mt-6">
-			<p className="px-4 py-3 text-sm text-pretty text-muted-foreground">
-				Your account stops at once. {DELETION_GRACE_DAYS} days later, its newsletters, contacts, campaigns and images are deleted
-				for good. Signing in before then restores it.
-			</p>
-			{blockers?.hasPlan && (
-				<RowBlocker
-					icon={CreditCard}
-					title={cancelAt ? `Your plan ends on ${formatDate(cancelAt)}` : "Cancel your plan first"}
-					text={
-						cancelAt
-							? "You can delete your account once it has ended."
-							: "Deleting your account doesn't stop Stripe from billing it. Cancel it in the billing portal."
+				<CardSettings
+					title="Organization"
+					stagger={2}
+					action={
+						<Button asChild variant="outline" size="sm">
+							<Link href="/organization">Manage</Link>
+						</Button>
 					}
 				>
-					<form action={openBillingPortal}>
-						<Button type="submit" variant="outline" size="sm">
-							Billing portal
-							<ArrowUpRight data-icon="inline-end" className="opacity-60" />
-						</Button>
-					</form>
-				</RowBlocker>
-			)}
-			{blockers?.campaigns.length > 0 && (
-				<RowBlocker icon={Send} title="Stop your campaigns first" text="Pause the ones sending, and cancel the scheduled ones.">
-					<ul className="flex flex-col gap-1">
-						{blockers.campaigns.map((campaign) => (
-							<li key={String(campaign._id)}>
-								<Link
-									href={`/campaigns/${campaign._id}`}
-									className="-mx-2 flex items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-sm transition-colors duration-150 hover:bg-muted"
-								>
-									<span className="truncate">{campaign.subject || "Untitled"}</span>
-									<BadgeStatus status={campaign.status} />
-								</Link>
-							</li>
-						))}
-					</ul>
-				</RowBlocker>
-			)}
-			<div className="flex justify-end rounded-b-xl bg-destructive/[0.03] px-4 py-3 dark:bg-destructive/[0.06]">
-				<DialogDeleteAccount email={email} graceDays={DELETION_GRACE_DAYS} isDisabled={Boolean(blockers)} />
+					<RowSettings label="Name" hint="Its people, billing and deleting it are on its page.">
+						<span className="flex h-9 items-center gap-2.5 text-sm">
+							<span className="truncate font-medium">{organization.name}</span>
+							<span className="shrink-0 text-muted-foreground">{ROLE_LABELS[member.role]}</span>
+						</span>
+					</RowSettings>
+				</CardSettings>
 			</div>
-		</CardSettings>
+		</LayoutNarrow>
 	);
 }

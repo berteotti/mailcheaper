@@ -32,7 +32,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 
 	const countUsers = (email) => getValue("SELECT count(*) FROM users WHERE email = ?", [email]);
 
-	// A user and their account from before these checks, as Better Auth and the sign-up wrote them.
+	// A user and their organization from before these checks, as Better Auth and the sign-up wrote them.
 	async function insertUser(email) {
 		const now = new Date().toISOString();
 		const id = `before-${newId()}`;
@@ -43,7 +43,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 			now,
 			getCanonicalEmail(email),
 		]);
-		await execute("INSERT INTO accounts (_id, ownerId, createdAt, updatedAt) VALUES (?, ?, ?, ?)", [newId(), id, Date.now(), Date.now()]);
+		await m.organizations.openOrganization({ id, email });
 	}
 	const visitor = (email) => ({ email, jar: new Map(), ip: `203.0.113.${++nextIp}` });
 
@@ -65,6 +65,7 @@ describe("sign-ups on MailCheap Cloud", () => {
 		m = {
 			auth: await import("../lib/auth.js"),
 			signin: await import("../app/signin/actions.js"),
+			organizations: await import("../lib/organizations.js"),
 		};
 	});
 

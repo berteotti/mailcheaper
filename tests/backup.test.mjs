@@ -34,6 +34,12 @@ test("a synthetic backup restores into an empty database with the same rows, cou
 	const newsletterId = db.sqlite.prepare("SELECT _id FROM newsletters").get()._id;
 	db.sqlite.prepare(`INSERT INTO users (id, name, email, emailVerified, createdAt, updatedAt, inbox) VALUES (?, '', 'owner@example.com', 1, ?, ?, 'owner@example.com')`)
 		.run(`user-${accountId}`, new Date(at).toISOString(), new Date(at).toISOString());
+	db.sqlite.prepare("INSERT INTO organizations (_id, name, createdAt, updatedAt) VALUES (?, 'Acme', ?, ?)").run(accountId, at, at);
+	db.sqlite.prepare("UPDATE accounts SET organizationId = ? WHERE _id = ?").run(accountId, accountId);
+	db.sqlite.prepare("INSERT INTO members (_id, organizationId, userId, role, createdAt, updatedAt) VALUES ('e0000000000000000000000a', ?, ?, 'owner', ?, ?)")
+		.run(accountId, `user-${accountId}`, at, at);
+	db.sqlite.prepare(`INSERT INTO invitations (_id, organizationId, email, role, invitedBy, expiresAt, createdAt, updatedAt)
+		VALUES ('e0000000000000000000000b', ?, 'invited@example.com', 'member', ?, ?, ?, ?)`).run(accountId, `user-${accountId}`, at, at, at);
 	db.sqlite.prepare("INSERT INTO account_secrets (accountId, postshibaPassword, updatedAt) VALUES (?, 'encrypted', ?)").run(accountId, at);
 	const contact = db.sqlite.prepare(`INSERT INTO contacts (_id, accountId, newsletterId, email, subscribedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?)`);
 	for (let index = 0; index < 1205; index++) contact.run(index.toString(16).padStart(24, "0"), accountId, newsletterId, `r${index}@example.com`, at, at, at);
@@ -59,7 +65,7 @@ test("a synthetic backup restores into an empty database with the same rows, cou
 	for (const file of readdirSync(migrations).filter((name) => name.endsWith(".sql")).sort()) restored.exec(readFileSync(new URL(file, migrations), "utf8"));
 	restored.exec(backupToSql(directory));
 
-	for (const table of ["accounts", "newsletters", "contacts", "campaigns", "messages", "suppressions"]) {
+	for (const table of ["organizations", "members", "invitations", "accounts", "newsletters", "contacts", "campaigns", "messages", "suppressions"]) {
 		assert.deepEqual(restored.prepare(`SELECT * FROM ${table} ORDER BY _id`).all(), db.sqlite.prepare(`SELECT * FROM ${table} ORDER BY _id`).all(), table);
 	}
 	for (const [table, key] of [["users", "id"], ["account_secrets", "accountId"]]) {

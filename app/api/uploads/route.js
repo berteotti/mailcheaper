@@ -6,7 +6,7 @@ import { MAX_UPLOAD_BYTES } from "@/lib/upload-image";
 // The image picker's library: the account's images, newest first, through the same list_images action as the API.
 export async function GET(request) {
 	const current = await getCurrentAccount();
-	if (!current) return Response.json({ error: "Unauthorized" }, { status: 401 });
+	if (!current?.account) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
 	const cursor = new URL(request.url).searchParams.get("cursor")?.slice(0, 200);
 	try {
@@ -25,7 +25,7 @@ export async function POST(request) {
 	const site = request.headers.get("sec-fetch-site");
 	if (site && site !== "same-origin") return Response.json({ error: "Forbidden" }, { status: 403 });
 	const current = await getCurrentAccount();
-	if (!current) return Response.json({ error: "Unauthorized" }, { status: 401 });
+	if (!current?.account) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
 	const bytes = Buffer.from(await request.arrayBuffer());
 	if (bytes.length > MAX_UPLOAD_BYTES) return Response.json({ error: "Images must be under 4 MB" }, { status: 413 });

@@ -133,7 +133,7 @@ async function customer(email, { slug } = {}) {
 	assert.equal(await as(user, () => catchRedirect(m.signin.verifySigninCode(null, form({ email, code: signInCode(email), next: "/" })))), "/");
 	const stored = await getOne("SELECT id FROM users WHERE email = ?", [email]);
 	user.userId = stored.id;
-	user.accountId = (await getOne("SELECT _id FROM accounts WHERE ownerId = ?", [stored.id]))._id;
+	user.accountId = (await getOne("SELECT a._id FROM accounts a JOIN members m ON m.organizationId = a.organizationId WHERE m.userId = ?", [stored.id]))._id;
 	await activate(user);
 	if (slug) {
 		await as(user, () => catchRedirect(m.newsletters.saveNewsletter(null, form({ name: `${slug} news`, slug, postalAddress: "1 Main St, Paris" }))));
@@ -501,7 +501,7 @@ describe("connecting with the official MCP client", () => {
 		const callback = await authorizeInBrowser(user, authorizationUrl(AGENT, { challenge }), { decision: "deny" });
 		assert.equal(callback.searchParams.get("error"), "access_denied");
 		assert.equal(callback.searchParams.get("code"), null);
-		assert.deepEqual(await m.oauth.listConnectedApps({ ownerId: user.userId }), []);
+		assert.deepEqual(await m.oauth.listConnectedApps({ _id: user.accountId }), []);
 	});
 
 	test("an app whose document asks for private_key_jwt (as ChatGPT's does) trades the code with a signed assertion", async () => {
@@ -554,7 +554,7 @@ describe("connecting with the official MCP client", () => {
 			assert.deepEqual(result.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-owner"]);
 			await client.close();
 		}
-		const apps = await m.oauth.listConnectedApps({ ownerId: users.owner.userId });
+		const apps = await m.oauth.listConnectedApps({ _id: users.owner.accountId });
 		assert.deepEqual(
 			apps.filter(({ clientId }) => clientId === GROK_DOCUMENT.client_id).map(({ name, host }) => ({ name, host })),
 			[{ name: "Grok", host: "grok.com" }]
@@ -577,7 +577,7 @@ describe("connecting with the official MCP client", () => {
 			assert.deepEqual(result.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-claude"]);
 			await client.close();
 		}
-		const apps = await m.oauth.listConnectedApps({ ownerId: user.userId });
+		const apps = await m.oauth.listConnectedApps({ _id: user.accountId });
 		assert.deepEqual(
 			apps.map(({ name, host }) => ({ name, host })).sort((a, b) => a.name.localeCompare(b.name)),
 			[
@@ -620,7 +620,7 @@ describe("connecting with the official MCP client", () => {
 		assert.ok(token.body.refresh_token);
 		const result = await callTool(token.body.access_token, "list_newsletters");
 		assert.deepEqual(result.structuredContent.newsletters.map(({ slug }) => slug), ["oauth-chatgpt"]);
-		const apps = await m.oauth.listConnectedApps({ ownerId: user.userId });
+		const apps = await m.oauth.listConnectedApps({ _id: user.accountId });
 		assert.deepEqual(
 			apps.map(({ name, host }) => ({ name, host })),
 			[{ name: "ChatGPT", host: "chatgpt.com" }]
@@ -660,7 +660,7 @@ describe("registering, as Grok Bot does", () => {
 			const consent = await as(user, () => m.oauth.readOAuthRequest(params));
 			assert.deepEqual(consent.client, { name: "Grok Bot", host: new URL(redirectUri).host }, "the consent page names it and where it goes back to");
 		}
-		const apps = await m.oauth.listConnectedApps({ ownerId: user.userId });
+		const apps = await m.oauth.listConnectedApps({ _id: user.accountId });
 		assert.deepEqual(
 			apps.map(({ name, host }) => ({ name, host })),
 			[
@@ -873,7 +873,7 @@ describe("connected apps", () => {
 		const refreshed = await postToken({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: AGENT.clientId, resource: MCP_URL });
 		assert.equal(refreshed.status, 400);
 		assert.equal(refreshed.body.error, "invalid_grant", "Claude and ChatGPT start over on invalid_grant");
-		assert.deepEqual(await m.oauth.listConnectedApps({ ownerId: user.userId }), []);
+		assert.deepEqual(await m.oauth.listConnectedApps({ _id: user.accountId }), []);
 
 		const { challenge } = pkce();
 		const response = await as(user, () => m.authRoute.GET(new Request(authorizationUrl(AGENT, { challenge }), { headers: { cookie: cookieOf(user) } })));

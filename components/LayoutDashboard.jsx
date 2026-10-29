@@ -16,9 +16,18 @@ import { isGetStartedOpen } from "@/lib/get-started";
 import { getRecommendedPlanId } from "@/lib/onboarding";
 import { getPricing } from "@/lib/pricing";
 
-export default function LayoutDashboard({ user, account, isAdmin, children }) {
+export default function LayoutDashboard({ user, account, organization, isAdmin, children }) {
 	const hasPlan = hasActiveSubscription(account);
-	const menu = <MenuUser name={user.name} email={user.email} image={user.image} status={getSendingStatus(account)} hasBilling={isCloud()} />;
+	const menu = (
+		<MenuUser
+			name={user.name}
+			email={user.email}
+			image={user.image}
+			organizationName={organization.name}
+			status={getSendingStatus(account)}
+			hasBilling={isCloud()}
+		/>
+	);
 
 	return (
 		<ProviderPaywall hasPlan={hasPlan} pricing={getPricing(getRecommendedPlanId(account))}>

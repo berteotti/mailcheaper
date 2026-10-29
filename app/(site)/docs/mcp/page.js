@@ -65,14 +65,14 @@ export default function McpPage() {
 					<h2 className="font-semibold tracking-tight">Sends can&apos;t be undone</h2>
 					<p className="mt-2 text-[15px] leading-7 text-pretty text-foreground/80">
 						{sendTools.map(({ name }) => name).join(", ")} are marked destructive, and their descriptions ask the assistant to check with
-						you first. Most clients ask before running them. send_test_email sends only to the account owner.
+						you first. Most clients ask before running them. send_test_email sends only to you, or to the organization&apos;s first owner with an API key.
 					</p>
 				</section>
 
 				<section id="connected-apps" style={{ "--stagger": setups + 2 }} className="scroll-mt-20 animate-enter">
 					<h2 className="text-xl font-semibold tracking-tight">Connected apps</h2>
 					<p className="mt-2 text-[15px] leading-7 text-pretty text-foreground/80">
-						An app you allow gets the same access as a full access key, in your account only. The{" "}
+						An app you allow gets the same access as a full access key, in your organization only, and disconnects if you leave it. The{" "}
 						<Link href="/api-keys" className={LINK_CLASS}>
 							API keys page
 						</Link>{" "}

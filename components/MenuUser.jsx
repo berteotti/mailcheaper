@@ -2,7 +2,7 @@
 
 import { useTransition } from "react";
 import Link from "next/link";
-import { ChevronsUpDown, CreditCard, LogOut, Moon, Sun, UserRound } from "lucide-react";
+import { Building2, ChevronsUpDown, CreditCard, LogOut, Moon, Sun, UserRound } from "lucide-react";
 import { signOut } from "@/app/signin/actions";
 import AvatarUser from "@/components/AvatarUser";
 import { RadioGroupTheme } from "@/components/ButtonThemeToggle";
@@ -22,8 +22,8 @@ import { askToSignOut } from "@/lib/sign-out";
 import { cn } from "@/lib/utils";
 
 // The bottom of the sidebar and of the mobile menu: who's signed in and whether the account sends, with what
-// concerns the whole account rather than one newsletter. status: getSendingStatus (lib/account-state.js).
-export default function MenuUser({ name, email, image, status, hasBilling }) {
+// concerns them or their whole organization rather than one newsletter. status: getSendingStatus (lib/account-state.js).
+export default function MenuUser({ name, email, image, organizationName, status, hasBilling }) {
 	const [isSigningOut, startSigningOut] = useTransition();
 	const displayName = name?.trim() || email;
 
@@ -60,6 +60,12 @@ export default function MenuUser({ name, email, image, status, hasBilling }) {
 					<Link href="/account">
 						<UserRound />
 						Account
+					</Link>
+				</DropdownMenuItem>
+				<DropdownMenuItem asChild>
+					<Link href="/organization">
+						<Building2 />
+						<span className="min-w-0 flex-1 truncate">{organizationName}</span>
 					</Link>
 				</DropdownMenuItem>
 				{hasBilling && (

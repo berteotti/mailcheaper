@@ -6,35 +6,38 @@ import { anonymous, as, catchNotFound, catchRedirect, form, platformEmails, sign
 let app;
 let auth;
 let actions;
-let accounts;
+let organizations;
 
 before(async () => {
 	app = await startTestApp();
 	auth = await import("../lib/auth.js");
 	actions = await import("../app/signin/actions.js");
-	accounts = await import("../lib/accounts.js");
+	organizations = await import("../lib/organizations.js");
 });
 
 after(() => app?.stop());
 
-test("the first sign-in creates the user and their account; the next ones reuse them", async () => {
+test("the first sign-in creates the user, their organization and its account; the next ones reuse them", async () => {
 	const first = await signIn("new@example.com");
 	assert.ok(first.account, "account created at the first sign-in");
-	assert.equal(String(first.account.ownerId), String(first.userId));
 	assert.equal(first.account.subscriptionStatus, null, "no plan before checkout");
 	assert.equal(first.account.status, "active");
+	const member = await getOne("SELECT * FROM members WHERE userId = ?", [first.userId]);
+	assert.equal(member.role, "owner");
+	assert.equal(member.organizationId, first.account.organizationId);
+	assert.equal((await getOne("SELECT name FROM organizations WHERE _id = ?", [member.organizationId])).name, "new", "named after the email until they give a name");
 
 	const again = await signIn("New@Example.com");
 	assert.equal(String(again.accountId), String(first.accountId));
-	assert.equal(await getValue("SELECT count(*) FROM accounts WHERE ownerId = ?", [first.userId]), 1);
+	assert.equal(await getValue("SELECT count(*) FROM members WHERE userId = ?", [first.userId]), 1);
 	assert.equal(await getValue("SELECT count(*) FROM users WHERE email = ?", ["new@example.com"]), 1);
 });
 
-test("a returning user's sign-in opens no second account", async () => {
+test("a returning user's sign-in opens no second organization", async () => {
 	const first = await signIn("signup@example.com");
 	await signIn("signup@example.com");
-	assert.equal(await accounts.createAccount(first.userId), false, "the account exists");
-	assert.equal(await getValue("SELECT count(*) FROM accounts WHERE ownerId = ?", [first.userId]), 1);
+	assert.equal(await organizations.openOrganization({ id: first.userId, email: "signup@example.com" }), false, "they belong to one");
+	assert.equal(await getValue("SELECT count(*) FROM accounts a JOIN members m ON m.organizationId = a.organizationId WHERE m.userId = ?", [first.userId]), 1);
 });
 
 test("sign-in codes go out through Resend and are stored hashed", async () => {

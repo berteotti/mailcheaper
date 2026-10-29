@@ -7,17 +7,19 @@ import { isDeletionPending } from "@/lib/account-state";
 import { getCurrentAccount } from "@/lib/auth";
 import { newsreader } from "@/lib/fonts";
 import { formatDate } from "@/lib/format";
+import { isOwner } from "@/lib/organizations";
 import { cn } from "@/lib/utils";
 
-export const metadata = { title: "Restore your account" };
+export const metadata = { title: "Restore your organization" };
 
 // Where signing in leads while the account waits to be deleted (requireAccount in lib/auth.js), until its purge starts.
 export default async function RestorePage() {
 	const current = await getCurrentAccount();
 	if (!current) redirect("/signin");
-	const { user, account } = current;
-	if (!isDeletionPending(account)) redirect("/");
+	const { user, account, organization, member } = current;
+	if (!account || !isDeletionPending(account)) redirect("/");
 	const canRestore = !account.deletion.purgeStartedAt;
+	const isOwnerHere = isOwner(member);
 
 	return (
 		<main className={cn(newsreader.variable, "flex min-h-dvh flex-col px-5 py-5 sm:px-8 sm:py-6 lg:px-12")}>
@@ -27,14 +29,14 @@ export default async function RestorePage() {
 			<div className="flex flex-1 items-center justify-center py-12">
 				<div className="w-full max-w-[24rem] animate-enter">
 					<h1 className="font-display text-[2.5rem] leading-[1.05] font-[480] tracking-[-0.03em] text-balance">
-						{canRestore ? "Your account is set to be deleted" : "Your account is being deleted"}
+						{canRestore ? `${organization.name} is set to be deleted` : `${organization.name} is being deleted`}
 					</h1>
 					<p className="mt-3 text-[15px] leading-6 text-pretty text-muted-foreground">
 						{canRestore
-							? `On ${formatDate(account.deletion.purgeAt)}, its newsletters, contacts, campaigns and images are deleted for good. Restore it to keep them.`
+							? `On ${formatDate(account.deletion.purgeAt)}, its newsletters, contacts, campaigns and images are deleted for good, with its members' sign-ins. ${isOwnerHere ? "Restore it to keep them." : "Only its owners can restore it."}`
 							: "Its newsletters, contacts, campaigns and images are being deleted for good, so it can't be restored."}
 					</p>
-					{canRestore && <FormRestore />}
+					{canRestore && isOwnerHere && <FormRestore />}
 					<form action={signOut} className="mt-8 flex items-center justify-between gap-3 border-t border-border/60 pt-4 text-sm">
 						<span className="min-w-0 truncate text-muted-foreground">{user.email}</span>
 						<ButtonSignout className="shrink-0">Sign out</ButtonSignout>

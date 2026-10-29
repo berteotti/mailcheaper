@@ -171,10 +171,12 @@ export async function signIn(email) {
 
 	const stored = await getOne("SELECT id FROM users WHERE email = ?", [email.toLowerCase()]);
 	user.userId = stored.id;
-	// Past its first 30 days of sending, so sends go out at full speed; tests of spread sends unset it.
-	await execute("UPDATE accounts SET spreadUntil = 0 WHERE ownerId = ?", [stored.id]);
-	user.account = await getOne("SELECT * FROM accounts WHERE ownerId = ?", [stored.id]);
-	user.accountId = user.account._id;
+	// Past its first 30 days of sending, so sends go out at full speed; tests of spread sends unset it. Someone invited
+	// has no account until they join.
+	const byMember = "SELECT a.* FROM accounts a JOIN members m ON m.organizationId = a.organizationId WHERE m.userId = ?";
+	await execute(`UPDATE accounts SET spreadUntil = 0 WHERE _id IN (SELECT _id FROM (${byMember}))`, [stored.id]);
+	user.account = await getOne(byMember, [stored.id]);
+	user.accountId = user.account?._id;
 	return user;
 }
 

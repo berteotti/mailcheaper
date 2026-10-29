@@ -11,7 +11,7 @@ export default function FormRestore() {
 	return (
 		<form action={action} className="mt-8 flex flex-col gap-3">
 			<Button type="submit" size="lg" disabled={isPending} className="h-11">
-				{isPending ? <Loader2 className="animate-spin" /> : "Restore account"}
+				{isPending ? <Loader2 className="animate-spin" /> : "Restore organization"}
 			</Button>
 			{state?.error && (
 				<p role="alert" className="text-sm text-pretty text-destructive">
