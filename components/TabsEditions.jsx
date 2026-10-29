@@ -13,19 +13,19 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { formatNumber } from "@/lib/format";
-import { LANGUAGE_OPTIONS, getLanguageName } from "@/lib/languages";
+import { getLanguageName } from "@/lib/languages";
 import { cn } from "@/lib/utils";
 
 // Longer than any language code, so it can't be one.
 const NEWSLETTER_LANGUAGE = "newsletter";
 
 // The campaign's languages, its own first, each with the contacts who get it: picking one edits it. The own one's
-// menu changes its language, an edition's deletes it, and the last menu adds one, first the languages of contacts
-// who get another one or nothing (missing). tabs: [{ key, language, contacts }].
+// menu changes its language, an edition's deletes it, and the last menu adds one. Both offer only the contacts'
+// languages it has nothing in yet (addable). tabs: [{ key, language, contacts }], addable: [{ language, contacts }].
 export default function TabsEditions({
 	tabs,
 	active,
-	missing,
+	addable,
 	ownLanguage,
 	newsletterLanguage,
 	isPending,
@@ -34,9 +34,6 @@ export default function TabsEditions({
 	onDelete,
 	onChangeLanguage,
 }) {
-	const taken = new Set(tabs.map(({ language }) => language));
-	const others = LANGUAGE_OPTIONS.filter(([code]) => !taken.has(code));
-
 	return (
 		<div className="flex min-w-0 items-center gap-1 overflow-x-auto py-2">
 			{tabs.map(({ key, language, contacts }, index) => {
@@ -71,9 +68,9 @@ export default function TabsEditions({
 												Newsletter&apos;s ({getLanguageName(newsletterLanguage)})
 											</DropdownMenuRadioItem>
 											<DropdownMenuSeparator />
-											{LANGUAGE_OPTIONS.filter(([code]) => code === language || !taken.has(code)).map(([code, name]) => (
+											{[language, ...addable.map((row) => row.language)].map((code) => (
 												<DropdownMenuRadioItem key={code} value={code}>
-													{name}
+													{getLanguageName(code)}
 												</DropdownMenuRadioItem>
 											))}
 										</DropdownMenuRadioGroup>
@@ -89,33 +86,25 @@ export default function TabsEditions({
 					</div>
 				);
 			})}
-			<DropdownMenu>
-				<DropdownMenuTrigger asChild>
-					<Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" disabled={isPending}>
-						<Plus data-icon="inline-start" />
-						Language
-					</Button>
-				</DropdownMenuTrigger>
-				<DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
-					{missing.length > 0 && (
-						<>
-							<DropdownMenuLabel>Contacts not in their language</DropdownMenuLabel>
-							{missing.map(({ language, contacts }) => (
-								<DropdownMenuItem key={language} onSelect={() => onAdd(language)}>
-									{getLanguageName(language)}
-									<span className="ml-auto text-xs text-muted-foreground tabular-nums">{formatNumber(contacts)}</span>
-								</DropdownMenuItem>
-							))}
-							<DropdownMenuSeparator />
-						</>
-					)}
-					{others.map(([code, name]) => (
-						<DropdownMenuItem key={code} onSelect={() => onAdd(code)}>
-							{name}
-						</DropdownMenuItem>
-					))}
-				</DropdownMenuContent>
-			</DropdownMenu>
+			{addable.length > 0 && (
+				<DropdownMenu>
+					<DropdownMenuTrigger asChild>
+						<Button variant="ghost" size="sm" className="shrink-0 text-muted-foreground" disabled={isPending}>
+							<Plus data-icon="inline-start" />
+							Language
+						</Button>
+					</DropdownMenuTrigger>
+					<DropdownMenuContent align="start" className="max-h-80 overflow-y-auto">
+						<DropdownMenuLabel>Your contacts&apos; languages</DropdownMenuLabel>
+						{addable.map(({ language, contacts }) => (
+							<DropdownMenuItem key={language} onSelect={() => onAdd(language)}>
+								{getLanguageName(language)}
+								<span className="ml-auto text-xs text-muted-foreground tabular-nums">{formatNumber(contacts)}</span>
+							</DropdownMenuItem>
+						))}
+					</DropdownMenuContent>
+				</DropdownMenu>
+			)}
 		</div>
 	);
 }

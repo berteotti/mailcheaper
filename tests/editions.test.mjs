@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeAudience, getEditionContent, getEditionMatcher } from "../lib/editions.js";
+import { describeAudience, getAddableLanguages, getEditionContent, getEditionMatcher } from "../lib/editions.js";
 import { getCampaignSendProblem, getIssueWebUrl } from "../lib/sending-rules.js";
 
 process.env.BETTER_AUTH_SECRET = "test-session-secret-with-at-least-32-characters";
@@ -40,6 +40,28 @@ test("each contact gets the edition in their language, else the one in the newsl
 
 	const british = getEditionMatcher({ campaign: { ...campaign, language: "en", languageRegion: "GB" }, newsletter: { ...newsletter, languageRegion: "US" } });
 	assert.equal(british.pick({ language: "de" }), null, "the newsletter's en-US reads en-GB");
+});
+
+test("the dashboard adds the contacts' languages the campaign has nothing of its own in, each variant apart", () => {
+	const portuguese = { ...brazilian, _id: "e0000000000000000000000b", languageRegion: "PT" };
+	const counts = [
+		{ language: "en", contacts: 20 },
+		{ language: "pt", contacts: 6 },
+		{ language: "pt-PT", contacts: 3 },
+		{ language: "pt-BR", contacts: 2 },
+	];
+	const audience = describeAudience(getEditionMatcher({ campaign, newsletter, editions: [portuguese] }), counts);
+	assert.deepEqual(getAddableLanguages(audience, ["en", "pt-PT"]), [
+		{ language: "pt", contacts: 6, edition: "pt-PT" },
+		{ language: "pt-BR", contacts: 2, edition: "pt-PT" },
+	]);
+
+	const both = getEditionMatcher({ campaign, newsletter, editions: [portuguese, brazilian] });
+	assert.equal(both.pick({ language: "pt", languageRegion: "BR" }), brazilian._id);
+	assert.equal(both.pick({ language: "pt", languageRegion: "PT" }), portuguese._id);
+	assert.equal(both.pick({ language: "pt" }), portuguese._id, "the first Portuguese one");
+	assert.deepEqual(getAddableLanguages(describeAudience(both, counts), ["en", "pt-PT", "pt-BR"]), [{ language: "pt", contacts: 6, edition: "pt-PT" }]);
+	assert.deepEqual(getAddableLanguages([], ["en"]), [], "without contacts, nothing to add");
 });
 
 test("editions are checked like the campaign, can't share its language, and don't link to its archive page", () => {

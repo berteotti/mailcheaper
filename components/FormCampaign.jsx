@@ -34,7 +34,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { getEditionMatcher } from "@/lib/editions";
+import { getAddableLanguages, getEditionMatcher } from "@/lib/editions";
 import { formatNumber } from "@/lib/format";
 import { DEFAULT_LANGUAGE, getLanguageName, getLanguageTag, matchLanguage, splitLanguage } from "@/lib/languages";
 import { markdownToHtml } from "@/lib/markdown";
@@ -155,8 +155,7 @@ export default function FormCampaign({
 	];
 	const leftOut = audience.filter(({ edition }) => !edition);
 	const leftOutCount = leftOut.reduce((sum, { contacts }) => sum + contacts, 0);
-	// Languages read by contacts who get another one, or nothing, to add first.
-	const missing = audience.filter(({ language: tag, edition }) => matchLanguage(tag, edition ? [edition] : []) === null);
+	const addable = getAddableLanguages(audience, tabs.map((tab) => tab.language));
 	// Once an edition is gone, its readers get another of the campaign's languages, else the newsletter's, if it has it.
 	const getNextLanguage = (tag) => {
 		const others = tabs.map((tab) => tab.language).filter((each) => each !== tag);
@@ -388,7 +387,7 @@ export default function FormCampaign({
 							<TabsEditions
 								tabs={tabs}
 								active={active}
-								missing={missing}
+								addable={addable}
 								ownLanguage={getLanguageTag(campaign)}
 								newsletterLanguage={getLanguageTag(newsletter)}
 								isPending={isWorking}
