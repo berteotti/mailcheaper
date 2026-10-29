@@ -5,6 +5,8 @@ import { useEditorState } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { NodeSelection } from "@tiptap/pm/state";
 import { Bold, CornerDownLeft, Heading1, Heading2, Italic, Link, Strikethrough, TextQuote, Unlink } from "lucide-react";
+import { findButton } from "@/lib/editor-button";
+import { normalizeUrl } from "@/lib/links";
 import { cn } from "@/lib/utils";
 
 export default function MenuFormat({ editor, isEditingLink, onEditLink }) {
@@ -142,7 +144,7 @@ export default function MenuFormat({ editor, isEditingLink, onEditLink }) {
 	);
 }
 
-function ButtonFormat({ label, isActive, type = "button", onClick, children }) {
+export function ButtonFormat({ label, isActive, type = "button", onClick, children }) {
 	return (
 		<button
 			type={type}
@@ -171,17 +173,11 @@ function keepFocus(event) {
 	if (!(event.target instanceof HTMLInputElement)) event.preventDefault();
 }
 
-// Text selections only: images and dividers have nothing to format.
+// Text selections only: images and dividers have nothing to format, and buttons have their own toolbar
+// (components/MenuButton.jsx).
 function shouldShowMenu({ editor, view, state, from, to }) {
-	if (!editor.isEditable || from === to || state.selection instanceof NodeSelection) return false;
+	if (!editor.isEditable || from === to || state.selection instanceof NodeSelection || findButton(state)) return false;
 	return view.hasFocus();
-}
-
-function normalizeUrl(value) {
-	const url = String(value ?? "").trim();
-	if (!url || /^(https?:|mailto:)/i.test(url)) return url;
-	if (/^[^\s@/]+@[^\s@/]+\.[^\s@/]+$/.test(url)) return `mailto:${url}`;
-	return `https://${url}`;
 }
 
 const MENU_KEY = "formatMenu";

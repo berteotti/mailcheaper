@@ -57,9 +57,17 @@ test("a link clicked in a preview opens in a new tab, with nothing of the dashbo
 	assert.equal(press(frame, { closest: () => null }).isPrevented, false, "a click beside the links is the email's");
 });
 
-test("the dashboard's email preview opens its links outside the frame, and the email gets no permission of its own", () => {
-	const source = read("components/PreviewEmail.jsx");
-	assert.match(source, /openLinksOutside\(event\.currentTarget\)/);
-	const sandboxes = [...source.matchAll(/sandbox=(\{[^}]*\}|"[^"]*")/g)].map(([, value]) => value);
-	assert.deepEqual(sandboxes, ['"allow-same-origin"'], "nothing in the email runs, opens or navigates on its own");
+test("the dashboard's email previews open their links outside the frame, and the email gets no permission of its own", () => {
+	for (const path of ["components/PreviewEmail.jsx", "components/DialogPreviewEmail.jsx"]) {
+		const source = read(path);
+		assert.match(source, /openLinksOutside\(event\.currentTarget\)/, path);
+		const sandboxes = [...source.matchAll(/sandbox=(\{[^}]*\}|"[^"]*")/g)].map(([, value]) => value);
+		assert.deepEqual(sandboxes, ['"allow-same-origin"'], `${path}: nothing in the email runs, opens or navigates on its own`);
+	}
+});
+
+test("Escape pressed in the full-screen preview's email closes the preview", () => {
+	const source = read("components/DialogPreviewEmail.jsx");
+	assert.match(source, /forwardEscape\(event\.currentTarget\)/);
+	assert.match(source, /event\.key === "Escape"[^\n]*document\.dispatchEvent\(new KeyboardEvent\("keydown", \{ key: "Escape"/);
 });

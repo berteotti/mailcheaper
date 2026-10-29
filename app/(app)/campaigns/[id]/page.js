@@ -1,8 +1,13 @@
+import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import CampaignReport from "@/components/CampaignReport";
 import FormCampaign from "@/components/FormCampaign";
 import { getAccountSendProblem, hasActiveSubscription, isBlocked } from "@/lib/account-state";
 import { getArchiveUrls } from "@/lib/archive-hosts";
+import { findCampaignLinks } from "@/lib/campaign-links";
+import { readRecipientFilter } from "@/lib/campaign-recipient-rules";
+import { listCampaignRecipients } from "@/lib/campaign-recipients";
+import { getCampaignActivity, getCampaignComparison } from "@/lib/campaign-report";
 import {
 	countNewContacts,
 	countStartedCampaigns,
@@ -12,20 +17,24 @@ import {
 	listSendTimes,
 } from "@/lib/campaign-queries";
 import { isSendingEnabled } from "@/lib/config";
-import { getAll, getOne } from "@/lib/db";
+import { getOne } from "@/lib/db";
 import { getCampaignLanguage } from "@/lib/editions";
-import { MESSAGE_STATS_SQL } from "@/lib/message-stats";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { getWarmup } from "@/lib/send-spread";
 import { serialize } from "@/lib/serialize";
 import { loadSender } from "@/lib/sender";
+import { TIME_ZONE_COOKIE, resolveTimeZone } from "@/lib/time-zone";
 import { countEmailsInFlight, getUsage } from "@/lib/usage";
 import { isObjectIdString } from "@/lib/validation";
 
 export const metadata = { title: "Campaign" };
 
-export default async function CampaignPage({ params }) {
-	const [{ id }, view] = await Promise.all([params, getSelectedNewsletter()]);
+// The recipients a sent campaign's report lists at first, and how many more each Show more adds (?shown=).
+const RECIPIENTS_STEP = 50;
+const MAX_RECIPIENTS = 500;
+
+export default async function CampaignPage({ params, searchParams }) {
+	const [{ id }, query = {}, view] = await Promise.all([params, searchParams, getSelectedNewsletter()]);
 	const { user, account } = view;
 	if (!isObjectIdString(id)) notFound();
 
@@ -37,17 +46,36 @@ export default async function CampaignPage({ params }) {
 	const [plan, editions] = await Promise.all([getPlanState(account), findEditions(campaign)]);
 
 	if (!["draft", "scheduled"].includes(campaign.status)) {
-		const [providers, languages, remainingCount] = await Promise.all([
-			getProviderBreakdown(campaign),
+		const filter = readRecipientFilter(query.recipients);
+		const shown = Math.min(MAX_RECIPIENTS, Math.max(RECIPIENTS_STEP, Number.parseInt(query.shown, 10) || RECIPIENTS_STEP));
+		const [{ providers, timeline, recipients: counts }, comparison, languages, remainingCount, links, list, cookieStore] = await Promise.all([
+			getCampaignActivity(campaign),
+			getCampaignComparison(campaign),
 			listResultsByLanguage(campaign, newsletter, editions),
 			countRemaining(campaign, newsletter, editions),
+			findCampaignLinks(campaign),
+			listCampaignRecipients(account, campaign, { filter, limit: shown }),
+			cookies(),
 		]);
 		return (
 			<CampaignReport
 				campaign={serialize(campaign)}
 				newsletter={serialize(newsletter)}
+				editions={serialize(editions)}
 				providers={providers}
 				languages={languages}
+				links={serialize(links)}
+				recipients={{
+					filter,
+					counts,
+					recipients: list.recipients,
+					hasMore: Boolean(list.nextCursor) && shown < MAX_RECIPIENTS,
+					shown,
+					step: RECIPIENTS_STEP,
+				}}
+				timeline={timeline}
+				comparison={comparison}
+				timeZone={resolveTimeZone(cookieStore.get(TIME_ZONE_COOKIE)?.value)}
 				remainingCount={remainingCount}
 				emailsLeft={plan.emailsLeft}
 				isBlocked={isBlocked(account)}
@@ -120,13 +148,4 @@ async function countRemaining(campaign, newsletter, editions) {
 	const { reached } = await getCampaignAudience(campaign, newsletter, editions);
 	const received = (campaign.stats?.recipients ?? 0) + (campaign.lastChance?.recipients ?? 0);
 	return Math.max(0, reached - received);
-}
-
-function getProviderBreakdown(campaign) {
-	return getAll(
-		`SELECT coalesce(provider, 'other') AS provider, ${MESSAGE_STATS_SQL} FROM messages
-		WHERE accountId = ? AND campaignId = ? AND kind = 'campaign' GROUP BY coalesce(provider, 'other')
-		HAVING sum(sentAt IS NOT NULL) > 0 ORDER BY sent DESC`,
-		[campaign.accountId, campaign._id]
-	);
 }

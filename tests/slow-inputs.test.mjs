@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { renderIssueBody } from "../lib/archive-content.js";
-import { cleanRichHtml, removeUnsafeElements } from "../lib/clean-html.js";
+import { cleanBlockHtml, cleanRichHtml, removeUnsafeElements } from "../lib/clean-html.js";
+import { findContentWarnings } from "../lib/content-warnings.js";
+import { highlightHtml } from "../lib/highlight-html.js";
 import { markdownToHtml } from "../lib/markdown.js";
-import { htmlToText } from "../lib/render-email.js";
+import { findButtonProblem, hasContent, htmlToText, renderEmail } from "../lib/render-email.js";
 import { firstImageUrl } from "../lib/thumbnail.js";
 
 // Bodies as large as the API and the editor accept. Before, the first two took 6 s at 192 KB and 12 s
@@ -117,12 +119,113 @@ for (const [label, html] of Object.entries(SHAPES)) {
 	});
 
 	test(`sending and saving read "${label}" (500 KB) in linear time`, () => {
-		for (const run of [() => htmlToText(html), () => firstImageUrl({ format: "html", html }), () => removeUnsafeElements(html)]) {
+		for (const run of [
+			() => htmlToText(html),
+			() => firstImageUrl({ format: "html", html }),
+			() => removeUnsafeElements(html),
+			() => findContentWarnings(html),
+			() => findContentWarnings(html, { isDesigned: true }),
+		]) {
 			const { ms } = fastest(run, maxMs);
 			assert.ok(ms < maxMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
 		}
 	});
 }
+
+// An editor's HTML block holding each shape, and shapes of its own: its inline styles and the block's marker.
+const BLOCK_SHAPES = {
+	...SHAPES,
+	"a long inline style": `<p style="${repeat("color:red;")}">x</p>`,
+	"a style of unclosed functions": `<p style="background:${repeat("linear-gradient(rgb(")}">x</p>`,
+	"a style of short unclosed functions": `<p style="${repeat("color:rgb(1,;")}">x</p>`,
+	"a link of unclosed merge tags": `<a href="https://x.test/${repeat("{{a")}">x</a>`,
+	"a run of entities": `<p title="${repeat("&#x")}">${repeat("&a")}</p>`,
+};
+
+function escapeText(html) {
+	return html.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+for (const [label, source] of Object.entries(BLOCK_SHAPES)) {
+	test(`an HTML block of "${label}" (500 KB) renders in linear time`, () => {
+		const html = `<div data-html-block="">${escapeText(source)}</div>`;
+		// The email's own <style> is in its head, so only the page and the cleaned block are read for unsafe tags.
+		for (const [run, read] of [
+			[() => renderIssueBody({ format: "rich", html }), (result) => result.html],
+			[() => cleanBlockHtml(source), (result) => result],
+			[() => renderEmail({ format: "rich", html, subject: "Hi" })],
+			[() => hasContent(html)],
+			[() => highlightHtml(source)],
+			[() => findContentWarnings(html)],
+		]) {
+			const { result, ms } = fastest(run, maxMs);
+			assert.ok(ms < maxMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
+			if (read) assertNoUnsafeTags(read(result), label);
+		}
+	});
+}
+
+// The editor's buttons (lib/buttons.js): each <div data-button> is read for one link, so its end and its link are looked
+// up once whatever surrounds them.
+const BUTTON_SHAPES = {
+	"a run of button starts": repeat('<div data-button="">'),
+	"buttons left open": repeat('<div data-button=""><a href="https://x.test">x'),
+	"buttons with no link end": repeat('<div data-button=""><a href="https://x.test">x</div>'),
+	"one button around everything": `<div data-button=""><a href="https://x.test">${repeat("</a> ")}</div>`,
+	"a button of unclosed links": `<div data-button="">${repeat("<a ")}</div>`,
+	"buttons with long links": repeat(`<div data-button=""><a href="https://x.test/${"a".repeat(2000)}">x</a></div>`),
+};
+
+for (const [label, html] of Object.entries(BUTTON_SHAPES)) {
+	test(`an issue of "${label}" (500 KB) renders and is checked in linear time`, () => {
+		for (const run of [
+			() => renderIssueBody({ format: "rich", html }),
+			() => renderEmail({ format: "rich", html, subject: "Hi" }),
+			() => findButtonProblem(html),
+			() => findContentWarnings(html),
+		]) {
+			const { ms } = fastest(run, maxMs);
+			assert.ok(ms < maxMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
+		}
+	});
+}
+
+// The review step's warnings (lib/content-warnings.js) read each link, each HTML block's tags and the issue's text once,
+// whatever their shape.
+const WARNING_SHAPES = {
+	"a link to a long host": `<a href="https://${repeat("a")}">x</a>`,
+	"a link to a long dotted host": `<a href="https://${repeat("a.")}com">x</a>`,
+	"a link of long dotted text": `<a href="https://x.test">${repeat("co.")}x</a>`,
+	"a link of long text and slashes": `<a href="https://x.test">a.com${repeat("/a.com")} x</a>`,
+	"a run of empty links": repeat('<a href="#"></a>'),
+	"a run of mailto links": repeat('<a href="mailto:a@b">x</a>'),
+	"a block of open tags": `<div data-html-block="">${repeat("&lt;div&gt;")}</div>`,
+	"a block of open quotes": `<div data-html-block="">${repeat("&lt;a href=&quot;")}</div>`,
+	"a block of open scripts": `<div data-html-block="">${repeat("&lt;script&gt;")}</div>`,
+	"a block of open comments": `<div data-html-block="">${repeat("&lt;!--")}</div>`,
+	"a block of images": `<div data-html-block="">${repeat("&lt;img src=x&gt;")}</div>`,
+	"a run of brackets": `<p>${repeat("[your ")}</p>`,
+	"a run of asterisks": `<p>${repeat("**a")}</p>`,
+	"a run of Markdown links": `<p>${repeat("[a](https://")}</p>`,
+	"a run of tags as text": `<p>${repeat("&lt;b ")}</p>`,
+	"lines of #": repeat("<p># </p>"),
+};
+
+for (const [label, html] of Object.entries(WARNING_SHAPES)) {
+	test(`the review step's warnings read "${label}" (500 KB) in linear time`, () => {
+		const { ms } = fastest(() => findContentWarnings(html), maxMs);
+		assert.ok(ms < maxMs, `${label}: ${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
+	});
+}
+
+test(`a run of HTML block markers (500 KB) renders in linear time`, () => {
+	for (const html of [repeat('<div data-html-block="">'), repeat('<div data-html-block="">x'), `<div data-html-block="">${repeat("x")}`]) {
+		for (const run of [() => renderIssueBody({ format: "rich", html }), () => renderEmail({ format: "rich", html, subject: "Hi" }), () => hasContent(html)]) {
+			const { ms } = fastest(run, maxMs);
+			assert.ok(ms < maxMs, `${Math.round(ms)} ms, over ${Math.round(maxMs)} ms`);
+		}
+	}
+});
 
 for (const [label, markdown] of Object.entries(MARKDOWN_SHAPES)) {
 	test(`Markdown "${label}" (500 KB) renders in linear time`, (t) => {

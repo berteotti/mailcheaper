@@ -25,6 +25,7 @@ test("a dialog never grows past the window: it scrolls inside and keeps its acti
 	assert.match(dialog, /grid-cols-\[minmax\(0,1fr\)\]/, "wide content can't widen the dialog past the window");
 	assert.match(dialog, /sticky -bottom-4/, "the footer sticks to the bottom while the body scrolls");
 	assert.match(read("components/ui/sheet.jsx"), /max-h-dvh[^"]*overflow-y-auto/);
+	assert.match(read("components/ui/popover.jsx"), /max-h-\(--radix-popover-content-available-height\)[^"]*overflow-y-auto/);
 });
 
 test("no dialog turns the shared scrolling off", () => {

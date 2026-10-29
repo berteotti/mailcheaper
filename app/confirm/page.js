@@ -1,6 +1,7 @@
 import { Link2Off } from "lucide-react";
 import CardNotice from "@/components/CardNotice";
 import FormConfirm from "@/components/FormConfirm";
+import StyleTheme from "@/components/StyleTheme";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { verifyConfirmToken } from "@/lib/confirmation";
 import { findOpenNewsletter } from "@/lib/public-newsletters";
@@ -20,6 +21,7 @@ export default async function ConfirmPage({ searchParams }) {
 
 	return (
 		<main className="flex min-h-dvh items-center justify-center bg-background px-4 py-16">
+			<StyleTheme theme={newsletter?.theme} />
 			{newsletter ? (
 				<FormConfirm
 					token={validToken}
