@@ -119,7 +119,7 @@ before(async () => {
 after(() => app?.stop());
 
 describe("server actions refuse another account's data", () => {
-	test("newsletters: update, welcome test, new campaign, contact import, adding a contact", async () => {
+	test("newsletters: update, welcome test, new campaign, contact import, adding a contact, the preview's contact picker", async () => {
 		const before = await snapshot();
 		const update = await as(alice, () =>
 			m.newsletters.saveNewsletter(
@@ -146,6 +146,12 @@ describe("server actions refuse another account's data", () => {
 			await as(alice, () => m.contacts.addContact(null, form({ newsletterId: bobData.newsletterId, email: "spam@example.net", consent: "on" }))),
 			{ error: "Newsletter not found" }
 		);
+		for (const newsletter of [bobData.newsletterId, "bob-weekly"]) {
+			for (const query of ["", "reader", "reader1@example.org"]) {
+				const picked = await as(alice, () => m.campaigns.findPreviewContacts(newsletter, query));
+				assert.deepEqual(picked, { error: "Newsletter not found" }, `${newsletter} ${query}`);
+			}
+		}
 		assert.deepEqual(await snapshot(), before);
 		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE accountId = ? AND email = 'spam@example.net'", [bob.accountId]), 0);
 		assert.equal(await getValue("SELECT count(*) FROM contacts WHERE newsletterId = ? AND email = 'spam@example.net'", [bobData.newsletterId]), 0);
@@ -229,6 +235,11 @@ describe("lists only show the account's own data", () => {
 		assert.equal(filtered.totalAll, 0, "naming Bob's newsletter in the filter shows nothing");
 		const searched = await m.contactQueries.findContactsPage(aliceAccount, { query: "reader" });
 		assert.equal(searched.contacts.length, 0);
+		const aliceNewsletterId = (await getOne("SELECT _id FROM newsletters WHERE accountId = ?", [alice.accountId]))._id;
+		for (const query of ["", "reader", "cold"]) {
+			const picked = await as(alice, () => m.campaigns.findPreviewContacts(aliceNewsletterId, query));
+			assert.deepEqual(picked, { contacts: [] }, `the preview's picker never offers Bob's readers: ${query || "newest"}`);
+		}
 
 		const campaigns = await m.campaignQueries.listRecentCampaigns({ accountId: alice.accountId, limit: 200 });
 		assert.equal(campaigns.length, 0);

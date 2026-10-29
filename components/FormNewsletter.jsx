@@ -4,6 +4,7 @@ import { useActionState, useDeferredValue, useEffect, useMemo, useState, useTran
 import { ExternalLink, FlaskConical, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { saveNewsletter, sendWelcomeTest } from "@/app/(app)/newsletters/actions";
+import ButtonPreview from "@/components/ButtonPreview";
 import InputImage from "@/components/InputImage";
 import PreviewEmail from "@/components/PreviewEmail";
 import StatusSaved from "@/components/StatusSaved";
@@ -18,6 +19,7 @@ import { formatNumber } from "@/lib/format";
 import { DEFAULT_LANGUAGE, LANGUAGE_OPTIONS, getLanguageTag } from "@/lib/languages";
 import { KEEP_URL_PLACEHOLDER, getLastChanceContent } from "@/lib/last-chance-content";
 import { MAX_AUTHOR_BIO_LENGTH, MAX_DESCRIPTION_LENGTH } from "@/lib/newsletters";
+import { previewForReader } from "@/lib/preview-reader";
 import { UNSUBSCRIBE_PLACEHOLDER, renderEmail } from "@/lib/render-email";
 import { getSharedAddress, isOnSharedDomain } from "@/lib/sender-rules";
 import { slugify } from "@/lib/slug";
@@ -98,6 +100,8 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 	}, [name, fromEmail, newsletter?.postalAddress, newsletter?.theme]);
 
 	const previewImageUrl = IMAGE_PREVIEW_PATTERN.test(imageUrl) ? imageUrl : "";
+	const sender = { name, fromName, fromEmail, imageUrl: previewImageUrl };
+	const previewNewsletter = { name, postalAddress: newsletter?.postalAddress, theme: newsletter?.theme };
 	const isShared = Boolean(sharedDomain) && fromDomain === sharedDomain;
 	const isDomainUnverified = !isShared && domains.some(({ domain, verified }) => domain === fromDomain && !verified);
 	const fromHint = getFromHint({ isShared, isDomainUnverified, fromDomain, hasDomains: domains.length > 0 });
@@ -290,10 +294,17 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 						<div className="p-3">
 							<PreviewEmail
 								html={confirmationHtml}
-								sender={{ name, fromName, fromEmail, imageUrl: previewImageUrl }}
+								sender={sender}
 								subject={deferredConfirmation.subject}
 								previewText={deferredConfirmation.previewText}
 								fit="content"
+								toolbar={
+									<ButtonPreview
+										sender={sender}
+										newsletterId={newsletter?._id}
+										renderFor={(reader) => previewForReader({ ...deferredConfirmation, newsletter: previewNewsletter }, reader)}
+									/>
+								}
 							/>
 						</div>
 					</>
@@ -339,10 +350,17 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 					<div className="p-3">
 						<PreviewEmail
 							html={welcomeHtml}
-							sender={{ name, fromName, fromEmail, imageUrl: previewImageUrl }}
+							sender={sender}
 							subject={deferredWelcome.subject}
 							previewText={deferredWelcome.previewText}
 							fit="content"
+							toolbar={
+								<ButtonPreview
+									sender={sender}
+									newsletterId={newsletter?._id}
+									renderFor={(reader) => previewForReader({ ...deferredWelcome, newsletter: previewNewsletter }, reader)}
+								/>
+							}
 						/>
 					</div>
 				)}
@@ -410,7 +428,7 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 					<div className="p-3">
 						<PreviewEmail
 							html={lastChance.html}
-							sender={{ name, fromName, fromEmail, imageUrl: previewImageUrl }}
+							sender={sender}
 							subject={lastChance.subject}
 							previewText={lastChance.previewText}
 							fit="content"

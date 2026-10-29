@@ -14,6 +14,7 @@ import {
 } from "@/app/(app)/campaigns/actions";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
 import BadgeStatus from "@/components/BadgeStatus";
+import ButtonPreview from "@/components/ButtonPreview";
 import DialogDeleteEdition from "@/components/DialogDeleteEdition";
 import DialogDiscardCampaign from "@/components/DialogDiscardCampaign";
 import DialogScheduleCampaign from "@/components/DialogScheduleCampaign";
@@ -33,11 +34,14 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { getEditionMatcher } from "@/lib/editions";
 import { formatNumber } from "@/lib/format";
-import { DEFAULT_LANGUAGE, getLanguageName, getLanguageTag, matchLanguage } from "@/lib/languages";
+import { DEFAULT_LANGUAGE, getLanguageName, getLanguageTag, matchLanguage, splitLanguage } from "@/lib/languages";
 import { markdownToHtml } from "@/lib/markdown";
+import { SAMPLE_READER } from "@/lib/merge-tags";
 import { getPresendChecks } from "@/lib/presend-checks";
-import { UNSUBSCRIBE_PLACEHOLDER, hasContent, renderEmail, withResponsiveImages } from "@/lib/render-email";
+import { getEditionNote, previewForReader, toPreviewFrame } from "@/lib/preview-reader";
+import { hasContent, renderEmail } from "@/lib/render-email";
 import { slugify } from "@/lib/slug";
 import { usePaywall } from "@/lib/use-paywall";
 import { useToastError } from "@/lib/use-toast-error";
@@ -111,22 +115,19 @@ export default function FormCampaign({
 	const deferredValues = useDeferredValue(values);
 	const isUploading = Object.values(drafts).some(({ body }) => body.includes('src="blob:'));
 
-	const rendered = useMemo(
-		() =>
-			renderEmail({
-				format: deferredValues.format,
-				html: deferredValues.body,
-				subject: deferredValues.subject,
-				previewText: deferredValues.previewText,
-				newsletter,
-				language: activeLanguage,
-			}),
+	const content = useMemo(
+		() => ({
+			format: deferredValues.format,
+			html: deferredValues.body,
+			subject: deferredValues.subject,
+			previewText: deferredValues.previewText,
+			newsletter,
+			language: activeLanguage,
+		}),
 		[deferredValues, newsletter, activeLanguage]
 	);
-	const previewHtml = useMemo(
-		() => withResponsiveImages(rendered.html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#")),
-		[rendered.html]
-	);
+	const rendered = useMemo(() => renderEmail(content), [content]);
+	const previewHtml = useMemo(() => toPreviewFrame(rendered.html), [rendered.html]);
 	const { checks, blocking } = getPresendChecks({
 		campaign: { ...campaign, ...values },
 		newsletter,
@@ -161,6 +162,18 @@ export default function FormCampaign({
 		const others = tabs.map((tab) => tab.language).filter((each) => each !== tag);
 		return matchLanguage(tag, others) ?? matchLanguage(getLanguageTag(newsletter) ?? DEFAULT_LANGUAGE, others);
 	};
+	const editionMatcher = getEditionMatcher({
+		campaign: splitLanguage(language),
+		newsletter,
+		editions: tabs.slice(1).map((tab) => splitLanguage(tab.language)),
+	});
+
+	// The full-screen preview shows the open language's email as a reader gets it, and says when a contact gets another.
+	function renderPreview(reader) {
+		const email = previewForReader(content, reader);
+		if (reader === SAMPLE_READER) return email;
+		return { ...email, note: getEditionNote({ matcher: editionMatcher, shown: activeLanguage, contact: reader }) };
+	}
 
 	async function persist() {
 		if (await flush()) return true;
@@ -450,8 +463,11 @@ export default function FormCampaign({
 						html={previewHtml}
 						className="lg:min-h-0 lg:flex-1"
 						toolbar={
-							<span className="text-xs text-muted-foreground tabular-nums">
-								{Math.ceil(rendered.bytes / 1000)} KB
+							<span className="flex items-center gap-2">
+								<span className="text-xs text-muted-foreground tabular-nums">
+									{Math.ceil(rendered.bytes / 1000)} KB
+								</span>
+								<ButtonPreview sender={newsletter} newsletterId={newsletter._id} renderFor={renderPreview} />
 							</span>
 						}
 					/>
