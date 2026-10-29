@@ -82,6 +82,10 @@ export default function FormCampaign({
 		...Object.fromEntries(editions.map((edition) => [getLanguageTag(edition), toDraft(edition)])),
 	}));
 	const savedDraftsRef = useRef(drafts);
+	// The editor, which goes to a check's words (EditorRich's reveal), and the column around its card, whose margin
+	// holds the dots beside its blocks' problems.
+	const editorRef = useRef(null);
+	const gutterRef = useRef(null);
 	const [active, setActive] = useState(OWN);
 	const values = drafts[active] ?? drafts[OWN];
 	const isHtml = values.format === "html";
@@ -334,102 +338,111 @@ export default function FormCampaign({
 			</HeaderPage>
 
 			<div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
-				<div className="overflow-hidden rounded-xl bg-card shadow-border animate-enter">
-					<Row label="From">
-						<span className="truncate text-sm">{from}</span>
-					</Row>
-					<Row label="To">
-						<span className="flex min-w-0 items-center gap-2 text-sm">
-							<AvatarNewsletter newsletter={newsletter} size={18} />
-							<span className="truncate">
-								{newsletter.name}
-								<span className="text-muted-foreground tabular-nums">
-									{" "}
-									· {formatNumber(audienceCount)}
+				<div ref={gutterRef} className="relative min-w-0">
+					<div className="overflow-hidden rounded-xl bg-card shadow-border animate-enter">
+						<Row label="From">
+							<span className="truncate text-sm">{from}</span>
+						</Row>
+						<Row label="To">
+							<span className="flex min-w-0 items-center gap-2 text-sm">
+								<AvatarNewsletter newsletter={newsletter} size={18} />
+								<span className="truncate">
+									{newsletter.name}
+									<span className="text-muted-foreground tabular-nums">
+										{" "}
+										· {formatNumber(audienceCount)}
+									</span>
 								</span>
+								{leftOutCount > 0 && (
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<span
+												tabIndex={0}
+												className="shrink-0 rounded text-muted-foreground tabular-nums underline decoration-dotted underline-offset-4"
+											>
+												{formatNumber(leftOutCount)} left out
+											</span>
+										</TooltipTrigger>
+										<TooltipContent>
+											Nothing in their language or the newsletter&apos;s:{" "}
+											{leftOut.map(({ language: tag, contacts }) => `${getLanguageName(tag)} (${formatNumber(contacts)})`).join(", ")}
+										</TooltipContent>
+									</Tooltip>
+								)}
 							</span>
-							{leftOutCount > 0 && (
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span
-											tabIndex={0}
-											className="shrink-0 rounded text-muted-foreground tabular-nums underline decoration-dotted underline-offset-4"
-										>
-											{formatNumber(leftOutCount)} left out
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>
-										Nothing in their language or the newsletter&apos;s:{" "}
-										{leftOut.map(({ language: tag, contacts }) => `${getLanguageName(tag)} (${formatNumber(contacts)})`).join(", ")}
-									</TooltipContent>
-								</Tooltip>
-							)}
-						</span>
-					</Row>
-					<Row label="Language">
-						<TabsEditions
-							tabs={tabs}
-							active={active}
-							missing={missing}
-							ownLanguage={getLanguageTag(campaign)}
-							newsletterLanguage={getLanguageTag(newsletter)}
-							isPending={isWorking}
-							onSelect={setActive}
-							onAdd={addEdition}
-							onDelete={setDeleting}
-							onChangeLanguage={changeLanguage}
-						/>
-					</Row>
-					<Row label="Subject">
-						<input
-							value={values.subject}
-							onChange={update("subject")}
-							placeholder="Subject"
-							maxLength={200}
-							className="h-11 w-full min-w-0 bg-transparent text-sm font-medium outline-none placeholder:font-normal placeholder:text-muted-foreground"
-						/>
-					</Row>
-					<Row label="Preview">
-						<input
-							value={values.previewText}
-							onChange={update("previewText")}
-							placeholder="Text shown after the subject"
-							maxLength={300}
-							className="h-11 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-						/>
-					</Row>
-					{archiveUrlBase && active === OWN && (
-						<Row label="URL">
-							<InputCampaignSlug
-								campaignId={campaign._id}
-								initialSlug={campaign.archiveSlug ?? ""}
-								placeholder={slugify(values.subject, 80) || "issue"}
-								urlBase={archiveUrlBase}
+						</Row>
+						<Row label="Language">
+							<TabsEditions
+								tabs={tabs}
+								active={active}
+								missing={missing}
+								ownLanguage={getLanguageTag(campaign)}
+								newsletterLanguage={getLanguageTag(newsletter)}
+								isPending={isWorking}
+								onSelect={setActive}
+								onAdd={addEdition}
+								onDelete={setDeleting}
+								onChangeLanguage={changeLanguage}
 							/>
 						</Row>
-					)}
-					{isHtml ? (
-						<div className="relative">
-							<span className="pointer-events-none absolute top-3 right-4 text-xs text-muted-foreground">HTML</span>
-							<textarea
-								value={values.body}
-								onChange={update("body")}
-								placeholder="<html>"
-								spellCheck={false}
-								aria-label="Content"
-								className="block min-h-[560px] w-full resize-none bg-transparent px-4 py-4 font-mono text-[13px] leading-6 outline-none [field-sizing:content] placeholder:text-muted-foreground"
+						<Row label="Subject">
+							<input
+								value={values.subject}
+								onChange={update("subject")}
+								placeholder="Subject"
+								maxLength={200}
+								className="h-11 w-full min-w-0 bg-transparent text-sm font-medium outline-none placeholder:font-normal placeholder:text-muted-foreground"
 							/>
-						</div>
-					) : (
-						<EditorRich key={active} content={values.body} onChange={updateBody} />
-					)}
+						</Row>
+						<Row label="Preview">
+							<input
+								value={values.previewText}
+								onChange={update("previewText")}
+								placeholder="Text shown after the subject"
+								maxLength={300}
+								className="h-11 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+							/>
+						</Row>
+						{archiveUrlBase && active === OWN && (
+							<Row label="URL">
+								<InputCampaignSlug
+									campaignId={campaign._id}
+									initialSlug={campaign.archiveSlug ?? ""}
+									placeholder={slugify(values.subject, 80) || "issue"}
+									urlBase={archiveUrlBase}
+								/>
+							</Row>
+						)}
+						{isHtml ? (
+							<div className="relative">
+								<span className="pointer-events-none absolute top-3 right-4 text-xs text-muted-foreground">HTML</span>
+								<textarea
+									value={values.body}
+									onChange={update("body")}
+									placeholder="<html>"
+									spellCheck={false}
+									aria-label="Content"
+									className="block min-h-[560px] w-full resize-none bg-transparent px-4 py-4 font-mono text-[13px] leading-6 outline-none [field-sizing:content] placeholder:text-muted-foreground"
+								/>
+							</div>
+						) : (
+							<EditorRich
+								key={active}
+								ref={editorRef}
+								gutterRef={gutterRef}
+								content={values.body}
+								onChange={updateBody}
+								newsletter={newsletter}
+							/>
+						)}
+					</div>
 				</div>
 
 				<div
 					style={{ "--stagger": 1 }}
 					className="flex flex-col gap-4 animate-enter lg:sticky lg:top-[calc(var(--plan-bar-height)+1.5rem)] lg:h-[calc(100dvh-var(--plan-bar-height)-3rem)]"
 				>
-					<ListChecks checks={checks} />
+					<ListChecks checks={checks} onReveal={isHtml ? null : (check) => editorRef.current?.reveal(check)} />
 					<PreviewEmail
 						sender={newsletter}
 						subject={deferredValues.subject}

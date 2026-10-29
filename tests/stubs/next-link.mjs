@@ -1,0 +1,6 @@
+import { createElement } from "react";
+
+// A plain link: what next/link renders on the server, without the router's own props.
+export default function Link({ href, prefetch, replace, scroll, shallow, onNavigate, ...props }) {
+	return createElement("a", { href: typeof href === "string" ? href : String(href?.pathname ?? ""), ...props });
+}
