@@ -4,6 +4,7 @@ import { pauseCampaign, resumeCampaign } from "@/app/(app)/campaigns/actions";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
 import BadgeStatus from "@/components/BadgeStatus";
 import ButtonCampaignAction from "@/components/ButtonCampaignAction";
+import ButtonPreview from "@/components/ButtonPreview";
 import ButtonCopy from "@/components/ButtonCopy";
 import CardStat from "@/components/CardStat";
 import ChartOpens from "@/components/ChartOpens";
@@ -14,7 +15,6 @@ import ImageFavicon from "@/components/ImageFavicon";
 import InputCampaignSlug from "@/components/InputCampaignSlug";
 import ListLegend from "@/components/ListLegend";
 import MenuReport from "@/components/MenuReport";
-import PreviewEmail from "@/components/PreviewEmail";
 import SectionRecipients from "@/components/SectionRecipients";
 import TableCampaignLinks from "@/components/TableCampaignLinks";
 import TabsPage, { PanelTab } from "@/components/TabsPage";
@@ -27,11 +27,10 @@ import { FIRST_SEND } from "@/lib/first-send";
 import { LIMITS, isSendingEnabled } from "@/lib/config";
 import { formatCount, formatDate, formatNumber, formatRate, formatRateChange, formatWeekdayHour } from "@/lib/format";
 import { rateTone } from "@/lib/health";
-import { getLanguageName } from "@/lib/languages";
+import { getLanguageName, getLanguageTag } from "@/lib/languages";
 import { PROVIDER_DOMAINS, PROVIDER_LABELS } from "@/lib/providers";
 import { TIMELINE_HOURS, findPeak, hoursToHalf, reachedOf } from "@/lib/report-stats";
 import { SEND_SPREAD } from "@/lib/send-spread";
-import { UNSUBSCRIBE_PLACEHOLDER, renderEmail, withResponsiveImages } from "@/lib/render-email";
 import { timeZoneLabel } from "@/lib/time-zone";
 
 // A sent campaign: its numbers on top, the details in tabs under them, and the email as it went out. editions: its
@@ -57,14 +56,16 @@ export default function CampaignReport({
 	const hasPage = newsletter.archiveEnabled && Boolean(campaign.archiveSlug);
 	const isOnArchive = hasPage && campaign.archiveListed !== false;
 	const progress = stats.recipients ? Math.min(stats.sent / stats.recipients, 1) : 0;
-	const { html } = renderEmail({
+	const content = {
 		format: campaign.format,
-		markdown: campaign.markdown,
-		html: campaign.html,
+		markdown: campaign.markdown ?? "",
+		html: campaign.html ?? "",
 		subject: campaign.subject,
 		previewText: campaign.previewText,
-		newsletter,
-	});
+		newsletter: { name: newsletter.name, postalAddress: newsletter.postalAddress, theme: newsletter.theme },
+		language: getLanguageTag(campaign) ?? undefined,
+	};
+	const sender = { name: newsletter.name, fromName: newsletter.fromName, fromEmail: newsletter.fromEmail, imageUrl: newsletter.imageUrl };
 
 	return (
 		<>
@@ -103,6 +104,7 @@ export default function CampaignReport({
 						</ButtonCampaignAction>
 					</GatePlan>
 				)}
+				<ButtonPreview content={content} sender={sender} newsletterId={String(newsletter._id)} />
 				<MenuReport
 					id={id}
 					pageUrl={isOnArchive ? getArchiveUrls(newsletter).post(campaign.archiveSlug) : null}
@@ -159,23 +161,6 @@ export default function CampaignReport({
 					recipients={recipients}
 					page={hasPage && <RowPageUrl id={id} slug={campaign.archiveSlug} newsletter={newsletter} />}
 				/>
-
-				<div style={{ "--stagger": 3 }} className="animate-enter">
-					<PreviewEmail
-						fit="content"
-						sender={newsletter}
-						subject={campaign.subject}
-						previewText={campaign.previewText}
-						html={withResponsiveImages(html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#"))}
-						// Rendered next to PreviewEmail's own children, so dev React asks for a key.
-						toolbar={
-							<span key="toolbar" className="truncate text-xs text-muted-foreground">
-								{newsletter.name}
-								{campaign.sentAt && ` · ${formatDate(campaign.sentAt)}`}
-							</span>
-						}
-					/>
-				</div>
 			</div>
 		</>
 	);

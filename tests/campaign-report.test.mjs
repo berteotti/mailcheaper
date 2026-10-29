@@ -83,6 +83,8 @@ test("the report's numbers stay on top, and its details are in tabs: Timeline op
 		["Archive", false],
 	]);
 	assert.ok(html.indexOf(card("Unsubscribed")) < html.indexOf('role="tablist"'), "the numbers come first, whatever tab is open");
+	assert.ok(html.indexOf(">Preview<") < html.indexOf(card("Delivered")), "the email opens full screen from the header");
+	assert.doesNotMatch(html, /title="Email preview"/, "rather than in a frame under the numbers");
 	assert.match(panelOf(html, "timeline"), />After sending</);
 	const links = panelOf(html, "links");
 	assert.match(links, /40 contacts clicked a link/);
