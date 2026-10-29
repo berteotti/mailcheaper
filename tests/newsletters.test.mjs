@@ -120,6 +120,8 @@ describe("the open newsletter", () => {
 		assert.equal(m.rules.getSwitchPath("/contacts"), "/contacts");
 		assert.equal(m.rules.getSwitchPath("/"), "/");
 		assert.equal(m.rules.getSwitchPath("/api-keys"), null);
+		assert.equal(m.rules.getSwitchPath("/newsletters/design"), "/newsletters/design", "Design stays Design");
+		assert.equal(m.rules.getSwitchPath(`/newsletters/${alpha}`), "/newsletters", "an ID isn't Design");
 	});
 
 	test("a forged ID is refused: another account's newsletter, or none, never opens", async () => {
@@ -321,6 +323,29 @@ describe("the REST API and MCP with several newsletters", () => {
 		const unsubscribed = await api(jane.key, "PATCH", "/contacts/both%40example.org", { newsletter: "alpha", status: "unsubscribed" });
 		assert.equal(unsubscribed.body.newsletterId, alpha);
 		assert.equal((await m.db.getOne("SELECT * FROM contacts WHERE accountId = ? AND newsletterId = ? AND email = ?", [jane.accountId, beta, "both@example.org"])).status, "active");
+	});
+
+	test("a theme is a preset and what changed on top of it: null takes a choice back, another preset starts over", async () => {
+		const { body: themes } = await api(jane.key, "GET", "/themes");
+		assert.ok(themes.presets.some(({ id }) => id === "garden"));
+		assert.ok(themes.fonts.some(({ id }) => id === "newsreader"));
+		assert.equal((await api(jane.key, "GET", `/newsletters/${alpha}`)).body.theme.preset, "mailcheap", "MailCheap's own until one is picked");
+
+		let { status, body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { preset: "garden", colors: { accent: "#AA0000" } } });
+		assert.equal(status, 200);
+		assert.deepEqual([body.theme.preset, body.theme.colors.accent, body.theme.customized], ["garden", "#aa0000", ["colors"]]);
+		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { radius: "full" } }));
+		assert.deepEqual([body.theme.colors.accent, body.theme.radius, body.theme.customized], ["#aa0000", "full", ["colors", "radius"]], "changes land on the saved ones");
+		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { colors: { accent: null } } }));
+		assert.deepEqual(body.theme.customized, ["radius"]);
+		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { preset: "midnight" } }));
+		assert.deepEqual([body.theme.preset, body.theme.customized], ["midnight", []]);
+		assert.equal((await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { colors: { text: "red" } } })).status, 400);
+
+		assert.deepEqual(await as(jane, () => m.newsletters.saveTheme(alpha, { preset: "swiss" })), { ok: true, theme: (await api(jane.key, "GET", `/newsletters/${alpha}`)).body.theme });
+		assert.ok("error" in (await as(jane, () => m.newsletters.saveTheme(strangerNewsletter, { preset: "swiss" }))), "never another account's");
+		const row = await m.db.getOne("SELECT theme FROM newsletters WHERE _id = ?", [strangerNewsletter]);
+		assert.notEqual(row.theme?.preset, "swiss");
 	});
 
 	test("each newsletter has its own shared address and archive, after its slug", async () => {

@@ -1,8 +1,11 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
+import { Palette } from "lucide-react";
 import CardDeleteNewsletter from "@/components/CardDeleteNewsletter";
 import FormNewsletter from "@/components/FormNewsletter";
 import HeaderPage from "@/components/HeaderPage";
 import LayoutNarrow from "@/components/LayoutNarrow";
+import { Button } from "@/components/ui/button";
 import { cleanupTotalsQuery } from "@/lib/cleanup";
 import { getSharedDomain, isSendingEnabled } from "@/lib/config";
 import { getOne } from "@/lib/db";
@@ -28,7 +31,14 @@ export default async function SettingsPage() {
 
 	return (
 		<LayoutNarrow>
-			<HeaderPage title="Settings" />
+			<HeaderPage title="Settings">
+				<Button asChild variant="outline">
+					<Link href="/newsletters/design">
+						<Palette data-icon="inline-start" />
+						Design
+					</Link>
+				</Button>
+			</HeaderPage>
 			<FormNewsletter
 				key={String(newsletter._id)}
 				newsletter={serialize(newsletter)}

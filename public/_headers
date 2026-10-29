@@ -1,0 +1,5 @@
+# Theme fonts load in emails and on newsletters' own hosts: browsers only take a font from another origin with CORS.
+# Static files are served before the Worker runs (assets first), so these rules go to Cloudflare's asset layer.
+/fonts/*
+  Access-Control-Allow-Origin: *
+  Cache-Control: public, max-age=604800, stale-while-revalidate=2592000

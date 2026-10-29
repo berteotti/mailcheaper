@@ -1,23 +1,44 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useImperativeHandle, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import FileHandler from "@tiptap/extension-file-handler";
-import Image from "@tiptap/extension-image";
 import { Placeholder } from "@tiptap/extensions";
 import StarterKit from "@tiptap/starter-kit";
 import { toast } from "sonner";
+import { HtmlBlock, editHtmlBlock } from "@/components/BlockHtml";
 import DialogImagePicker from "@/components/DialogImagePicker";
+import GutterProblems from "@/components/GutterProblems";
+import MenuButton from "@/components/MenuButton";
 import MenuFormat from "@/components/MenuFormat";
-import { SlashCommand } from "@/components/MenuSlash";
+import MenuImage from "@/components/MenuImage";
+import { MergeTagSuggestion, SlashCommand } from "@/components/MenuSlash";
+import TooltipMergeTag from "@/components/TooltipMergeTag";
+import { isButtonLink } from "@/lib/buttons";
+import { BlockHandle } from "@/lib/editor-block-handle";
+import { ButtonBlock, findButton } from "@/lib/editor-button";
 import { Callout } from "@/lib/editor-callout";
-import { IMAGE_TYPES, getDisplaySize, prepareImage, uploadImage } from "@/lib/upload-image";
+import { findWords } from "@/lib/editor-find";
+import { ImageAligned } from "@/lib/editor-image";
+import { MergeTags } from "@/lib/editor-merge-tags";
+import { Problems, findDocProblems, findProblem, revealProblem } from "@/lib/editor-problems";
+import { UndoDelete } from "@/lib/editor-undo-delete";
+import { IMAGE_TYPES, IMAGE_TYPE_ERROR, getDisplaySize, prepareImage, uploadImage } from "@/lib/upload-image";
+import { useFileDropGuard } from "@/lib/use-file-drop";
 
 const MIN_HEIGHT = "min-h-[560px]";
 
-export default function EditorRich({ content, onChange }) {
+// newsletter: whose email design HTML blocks preview in, and whose button colors and corners buttons show.
+// ref: reveal({ id, message, words }), which goes to a review step's warning or check (lib/campaign-steps.js), else to
+// the first place the issue has the words, and says whether it found it. gutterRef: the positioned element around the
+// editor's card, whose problems' dots sit beside it in the page's margin (components/GutterProblems.jsx).
+export default function EditorRich({ ref, gutterRef, content, onChange, newsletter = null }) {
 	const [isEditingLink, setIsEditingLink] = useState(false);
+	const [isEditingButtonLink, setIsEditingButtonLink] = useState(false);
 	const [isPickingImage, setIsPickingImage] = useState(false);
+	// The block whose dot says what it's about, once brought into view.
+	const [pinned, setPinned] = useState(null);
+	const unpin = useCallback(() => setPinned(null), []);
 	const editor = useEditor({
 		immediatelyRender: false,
 		content,
@@ -28,7 +49,7 @@ export default function EditorRich({ content, onChange }) {
 				link: { openOnClick: false, defaultProtocol: "https" },
 				dropcursor: { color: "var(--ring)", width: 2 },
 			}),
-			Image.configure({
+			ImageAligned.configure({
 				resize: {
 					enabled: true,
 					directions: ["left", "right"],
@@ -38,6 +59,12 @@ export default function EditorRich({ content, onChange }) {
 				},
 			}),
 			Callout,
+			ButtonBlock.configure({ newsletter, onEditLink: () => setIsEditingButtonLink(true) }),
+			HtmlBlock.configure({ newsletter }),
+			BlockHandle,
+			UndoDelete,
+			MergeTags,
+			Problems,
 			Placeholder.configure({
 				placeholder: ({ node }) => (node.type.name === "heading" ? "Heading" : "Write, or press / for commands"),
 			}),
@@ -48,25 +75,66 @@ export default function EditorRich({ content, onChange }) {
 				onPaste: (current, files) => insertImages(current, files),
 			}),
 			SlashCommand.configure({ onPickImage: () => setIsPickingImage(true) }),
+			MergeTagSuggestion,
 		],
 		editorProps: {
-			attributes: { class: `prose-issue ${MIN_HEIGHT} px-5 py-5 outline-none`, "aria-label": "Content" },
+			// With a mouse, the left padding holds the blocks' drag handle (lib/editor-block-handle.js).
+			attributes: { class: `prose-issue ${MIN_HEIGHT} px-5 py-5 outline-none [@media(pointer:fine)]:pl-12`, "aria-label": "Content" },
+			// In a button, ⌘K opens the button's own link (lib/editor-button.js).
 			handleKeyDown: (view, event) => {
 				const isLinkShortcut = (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k";
-				if (!isLinkShortcut || view.state.selection.empty) return false;
+				if (!isLinkShortcut || view.state.selection.empty || findButton(view.state)) return false;
 				setIsEditingLink(true);
+				return true;
+			},
+			// The file handler takes pictures and passes on any other file, which would vanish without a word.
+			handleDrop: (_view, event) => {
+				const files = [...(event.dataTransfer?.files ?? [])];
+				if (files.length === 0 || files.some((file) => IMAGE_TYPES.includes(file.type))) return false;
+				event.preventDefault();
+				toast.error(IMAGE_TYPE_ERROR);
 				return true;
 			},
 		},
 		onUpdate: ({ editor: current }) => onChange(current.getHTML()),
 	});
+	useFileDropGuard();
+
+	// A button whose link is missing or looks broken opens its link field, an HTML block its HTML, which says what's wrong
+	// under it, and words get their dot's message beside them.
+	function reveal(found) {
+		if (!revealProblem(editor, found)) return false;
+		const node = editor.state.doc.nodeAt(found.pos);
+		if (node.type.name === "htmlBlock") editHtmlBlock(editor.view, found.pos);
+		else if (node.type.name === "button") setIsEditingButtonLink(found.problem.id === "links" || !isButtonLink(node.attrs.href));
+		else setPinned(found.pos);
+		return true;
+	}
+
+	useImperativeHandle(ref, () => ({
+		reveal: ({ id, message, words }) => {
+			if (!editor || editor.isDestroyed) return false;
+			const found = findProblem(findDocProblems(editor.state.doc), { id, message });
+			return found ? reveal(found) : Boolean(words && selectWords(editor, words));
+		},
+	}));
 
 	if (!editor) return <div className={MIN_HEIGHT} />;
 
 	return (
 		<>
-			<EditorContent editor={editor} />
+			<EditorContent editor={editor} className="relative" />
+			<GutterProblems
+				editor={editor}
+				gutterRef={gutterRef}
+				pinned={pinned}
+				onUnpin={unpin}
+				onReveal={({ pos, problems }) => reveal({ pos, problem: problems[0] })}
+			/>
 			<MenuFormat editor={editor} isEditingLink={isEditingLink} onEditLink={setIsEditingLink} />
+			<MenuButton editor={editor} isEditingLink={isEditingButtonLink} onEditLink={setIsEditingButtonLink} />
+			<MenuImage editor={editor} />
+			<TooltipMergeTag editor={editor} />
 			<DialogImagePicker
 				open={isPickingImage}
 				onOpenChange={setIsPickingImage}
@@ -74,6 +142,16 @@ export default function EditorRich({ content, onChange }) {
 			/>
 		</>
 	);
+}
+
+// Centered on the screen, where the editor's own scrolling would leave the words at its edge, under the page's header.
+function selectWords(editor, words) {
+	const found = findWords(editor.state.doc, words);
+	if (!found || editor.isDestroyed) return false;
+	editor.chain().focus(null, { scrollIntoView: false }).setTextSelection(found).run();
+	const { node } = editor.view.domAtPos(found.from);
+	(node.nodeType === Node.TEXT_NODE ? node.parentElement : node)?.scrollIntoView({ block: "center" });
+	return true;
 }
 
 // Where the slash command was typed: the editor keeps its selection while the picker has focus.

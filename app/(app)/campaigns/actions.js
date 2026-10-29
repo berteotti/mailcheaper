@@ -80,6 +80,23 @@ export async function setCampaignLanguage(id, language) {
 	return { ok: true };
 }
 
+// The full-screen preview's reader picker: the newsletter's active contacts whose address starts with what's typed, the
+// newest before anything is. Without a newsletter, list_contacts would look through every one of the account's.
+export async function findPreviewContacts(newsletterId, query) {
+	const newsletter = String(newsletterId ?? "").trim();
+	if (!newsletter) return { error: "Newsletter not found" };
+	const { output, failure } = await runDashboardAction("list_contacts", {
+		newsletter,
+		search: String(query ?? "").slice(0, 100),
+		status: "active",
+		limit: 8,
+	});
+	if (failure) return toFormError(failure);
+	return {
+		contacts: output.contacts.map(({ id, email, firstName, lastName, language }) => ({ id, email, firstName, lastName, language })),
+	};
+}
+
 export async function sendTestCampaign(id, language) {
 	const { failure } = await runDashboardAction("send_test_email", { id: String(id), ...(language && { language: String(language) }) });
 	revalidatePath(`/campaigns/${id}`);

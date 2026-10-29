@@ -11,6 +11,11 @@ const SELF_HOSTED = { MAILCHEAP_CLOUD: "", EMAIL_FROM: "MailCheap <login@mail.se
 const CODE_SUBJECT = /^\d{6} is your MailCheap code$/;
 const CLOUDFLARE = { CLOUDFLARE_EMAIL_API_TOKEN: "cf_test_token", CLOUDFLARE_EMAIL_ACCOUNT_ID: "0123456789abcdef" };
 
+// The header mail apps read the code from, bound to APP_URL's origin.
+function otpToken(subject) {
+	return `"${subject.slice(0, 6)}"; origin="http://localhost:3000"`;
+}
+
 let app;
 let fake;
 let m;
@@ -67,8 +72,10 @@ describe("MailCheap Cloud", () => {
 		assert.deepEqual(platformEmails.at(-3).to, ["cloud@example.com"]);
 		assert.equal(platformEmails.at(-3).from, "MailCheap <hello@r.mailcheap.ai>", "from a subdomain, apart from mailcheap.ai");
 		assert.equal(platformEmails.at(-3).reply_to, "hello@mailcheap.ai", "replies reach support");
+		assert.deepEqual(platformEmails.at(-3).headers, { "OTP-Token": otpToken(platformEmails.at(-3).subject) });
 		assert.deepEqual(platformEmails.at(-2).to, ["admin@example.com"]);
 		assert.equal(platformEmails.at(-2).subject, "[MailCheap] Cloud alert");
+		assert.equal(platformEmails.at(-2).headers, undefined, "an alert carries no code");
 	});
 
 	test("with Cloudflare's keys instead, or chosen with both, Cloudflare Email Service sends them", async () => {
@@ -89,6 +96,7 @@ describe("MailCheap Cloud", () => {
 		assert.equal(code.body.reply_to, "hello@mailcheap.ai");
 		assert.match(code.body.subject, CODE_SUBJECT);
 		assert.match(code.body.html, /Your sign-in code/);
+		assert.equal(code.body.headers, undefined, "Cloudflare refuses a send with OTP-Token, which isn't on its allowlist");
 		assert.deepEqual([alert.body.to, alert.body.subject], [["admin@example.com"], "[MailCheap] Cloudflare alert"]);
 	});
 
@@ -145,6 +153,7 @@ describe("self-hosted server", () => {
 		assert.deepEqual(added(before), { resend: 1, cloudflare: 0, ses: 0, postshiba: 0, customer: 0 });
 		assert.equal(platformEmails.at(-1).from, "MailCheap <login@mail.selfhost.dev>");
 		assert.equal(platformEmails.at(-1).reply_to, undefined, "no MailCheap support address on a self-hosted server");
+		assert.deepEqual(platformEmails.at(-1).headers, { "OTP-Token": otpToken(platformEmails.at(-1).subject) });
 	});
 
 	test("with Cloudflare's keys, Cloudflare Email Service sends them from EMAIL_FROM, not the email provider", async () => {
@@ -167,6 +176,7 @@ describe("self-hosted server", () => {
 		const [code, alert] = platformSent.slice(-2);
 		assert.deepEqual([code.from, code.to, code.tenantName, code.configurationSet], ["MailCheap <login@mail.selfhost.dev>", "self-ses@example.com", undefined, undefined]);
 		assert.match(code.subject, CODE_SUBJECT);
+		assert.deepEqual(code.headers, { "OTP-Token": otpToken(code.subject) }, "SES carries the header too");
 		assert.deepEqual([alert.to, alert.subject], ["admin@example.com", "[MailCheap] Self-hosted alert"]);
 	});
 
@@ -191,6 +201,7 @@ describe("self-hosted server", () => {
 			assert.equal(clusterId, POSTSHIBA.transactionalClusterId);
 			assert.deepEqual([body.tenant, body.from, body.to], [tenants[0].id, "MailCheap <login@mail.selfhost.dev>", ["self-ps@example.com"]]);
 			assert.match(body.subject, CODE_SUBJECT);
+			assert.deepEqual(body.headers, { "OTP-Token": otpToken(body.subject) }, "PostShiba carries the header too");
 			assert.deepEqual(body.unique_args, { kind: "platform" });
 			assert.equal(credentials().length, 1, "the credential is made once");
 			assert.equal([...fake.state.tenants.values()].filter(({ slug }) => slug === "mc-platform").length, 1);

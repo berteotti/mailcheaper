@@ -23,8 +23,10 @@ let m;
 
 async function sendCode(user) {
 	assert.deepEqual(await as(user, () => m.organization.sendDeletionCode()), { sent: true });
-	const { subject } = platformEmails.findLast(({ to, subject }) => to.includes(user.email) && DELETION_SUBJECT.test(subject));
-	return DELETION_SUBJECT.exec(subject)[1];
+	const { subject, headers } = platformEmails.findLast(({ to, subject }) => to.includes(user.email) && DELETION_SUBJECT.test(subject));
+	const code = DELETION_SUBJECT.exec(subject)[1];
+	assert.equal(headers["OTP-Token"], `"${code}"; origin="http://localhost:3000"`, "mail apps read the code from OTP-Token, bound to APP_URL's origin");
+	return code;
 }
 
 // The action's answer, or where it sent the browser.

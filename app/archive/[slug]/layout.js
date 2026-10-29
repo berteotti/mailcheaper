@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import FooterArchive from "@/components/FooterArchive";
 import HeaderArchive from "@/components/HeaderArchive";
 import ProviderSubscribe from "@/components/ProviderSubscribe";
+import StyleTheme from "@/components/StyleTheme";
 import { countReaders, getArchiveNewsletter } from "@/lib/archive-data";
 import { getArchiveUrls } from "@/lib/archive-hosts";
 import { getLanguageTag } from "@/lib/languages";
@@ -21,6 +22,7 @@ export default async function ArchiveLayout({ children, params }) {
 
 	return (
 		<ProviderSubscribe newsletter={pitch} readers={readers}>
+			<StyleTheme theme={newsletter.theme} />
 			{/* The root layout's <html> is the dashboard's, in English. */}
 			<div lang={getLanguageTag(newsletter)} className="flex min-h-dvh flex-col">
 				<HeaderArchive newsletter={newsletter} indexHref={index} />

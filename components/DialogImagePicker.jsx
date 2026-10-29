@@ -24,7 +24,7 @@ export default function DialogImagePicker({ open, onOpenChange, onSelect, curren
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="gap-0 overflow-hidden p-0 sm:max-w-xl">
+			<DialogContent className="gap-0 p-0 sm:max-w-xl">
 				<PickerImage currentUrl={currentUrl} onSelect={select} />
 			</DialogContent>
 		</Dialog>

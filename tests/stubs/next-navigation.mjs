@@ -19,3 +19,16 @@ export function redirect(url) {
 export function notFound() {
 	throw new NotFoundError();
 }
+
+// Client components read the route while a test renders them on the server: the home page, no query.
+export function usePathname() {
+	return "/";
+}
+
+export function useSearchParams() {
+	return new URLSearchParams();
+}
+
+export function useRouter() {
+	return { push() {}, replace() {}, refresh() {}, back() {}, forward() {}, prefetch() {} };
+}
