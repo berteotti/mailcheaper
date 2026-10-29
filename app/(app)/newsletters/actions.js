@@ -102,3 +102,11 @@ export async function createNewsletter(_state, formData) {
 	await saveSelectedNewsletter(output.id);
 	redirect("/newsletters");
 }
+
+// Design (FormTheme): a preset alone applies it as it comes; the customizer sends a theme's full values.
+export async function saveTheme(newsletterId, theme) {
+	const { output, failure } = await runDashboardAction("update_newsletter", { id: String(newsletterId ?? ""), theme });
+	if (failure) return toFormError(failure);
+	revalidatePath("/newsletters", "layout");
+	return { ok: true, theme: output.theme };
+}

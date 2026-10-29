@@ -110,7 +110,8 @@ export async function proxy(request) {
 	return NextResponse.redirect(signin);
 }
 
-// favicon.ico goes through the proxy so archive domains answer 404 and browsers keep the newsletter's logo.
+// favicon.ico goes through the proxy so archive domains answer 404 and browsers keep the newsletter's logo. Theme fonts
+// (public/fonts) load on every host, archives included.
 export const config = {
-	matcher: ["/((?!_next/static|_next/image|.*\\.(?:png|svg|jpg|webp)$).*)"],
+	matcher: ["/((?!_next/static|_next/image|.*\\.(?:png|svg|jpg|webp|woff2)$).*)"],
 };

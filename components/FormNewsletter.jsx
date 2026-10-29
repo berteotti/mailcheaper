@@ -69,9 +69,9 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 				markdown: deferredWelcome.markdown,
 				subject: deferredWelcome.subject,
 				previewText: deferredWelcome.previewText,
-				newsletter: { name, postalAddress: newsletter?.postalAddress },
+				newsletter: { name, postalAddress: newsletter?.postalAddress, theme: newsletter?.theme },
 			}).html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#"),
-		[deferredWelcome, name, newsletter?.postalAddress]
+		[deferredWelcome, name, newsletter?.postalAddress, newsletter?.theme]
 	);
 
 	// Until it's edited, the built-in email follows the name and the description.
@@ -82,20 +82,20 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 	const deferredConfirmation = useDeferredValue(confirmation);
 	const confirmationHtml = useMemo(
 		() =>
-			renderEmail({ ...deferredConfirmation, newsletter: { name, postalAddress: newsletter?.postalAddress } })
+			renderEmail({ ...deferredConfirmation, newsletter: { name, postalAddress: newsletter?.postalAddress, theme: newsletter?.theme } })
 				.html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#")
 				.replaceAll(CONFIRM_URL_PLACEHOLDER, "#"),
-		[deferredConfirmation, name, newsletter?.postalAddress]
+		[deferredConfirmation, name, newsletter?.postalAddress, newsletter?.theme]
 	);
 
 	const lastChance = useMemo(() => {
 		const content = getLastChanceContent({ name, fromEmail });
-		const { html } = renderEmail({ ...content, newsletter: { name, postalAddress: newsletter?.postalAddress } });
+		const { html } = renderEmail({ ...content, newsletter: { name, postalAddress: newsletter?.postalAddress, theme: newsletter?.theme } });
 		return {
 			...content,
 			html: html.replaceAll(UNSUBSCRIBE_PLACEHOLDER, "#").replaceAll(KEEP_URL_PLACEHOLDER, "#"),
 		};
-	}, [name, fromEmail, newsletter?.postalAddress]);
+	}, [name, fromEmail, newsletter?.postalAddress, newsletter?.theme]);
 
 	const previewImageUrl = IMAGE_PREVIEW_PATTERN.test(imageUrl) ? imageUrl : "";
 	const isShared = Boolean(sharedDomain) && fromDomain === sharedDomain;
