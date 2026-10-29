@@ -15,6 +15,10 @@ export const metadata = {
 	robots: { index: false, follow: false },
 };
 
+// Where browsers support it (Chrome on Android), the on-screen keyboard shrinks the page instead of covering it, so a
+// dialog's actions stay above the keyboard.
+export const viewport = { interactiveWidget: "resizes-content" };
+
 export default function RootLayout({ children }) {
 	return (
 		<html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable}`}>
