@@ -21,10 +21,13 @@ test("an export link carries the account and filters, signed, for an hour", () =
 		status: "active",
 		query: "jane",
 		language: null,
+		exactLanguage: false,
 	});
 	assert.equal(verifyExportToken(token, now + 61 * 60_000), null, "expired");
 	const french = createExportToken({ accountId: ACCOUNT, language: "fr" }, now).token;
 	assert.equal(verifyExportToken(french, now).language, "fr");
+	const portuguese = createExportToken({ accountId: ACCOUNT, language: "pt", exactLanguage: true }, now).token;
+	assert.deepEqual([verifyExportToken(portuguese, now).language, verifyExportToken(portuguese, now).exactLanguage], ["pt", true], "pt alone");
 
 	const [payload, signature] = token.split(".");
 	const widened = Buffer.from(JSON.stringify({ a: "6650f1c2e9b1d4a0123456aa", e: Math.floor(now / 1000) + 3600 })).toString("base64url");

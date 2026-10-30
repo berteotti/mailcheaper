@@ -7,12 +7,12 @@ import { exportContacts } from "@/app/(app)/contacts/actions";
 import { Button } from "@/components/ui/button";
 
 // The file downloads from a link valid for an hour, with the list's current filters.
-export default function ButtonExportContacts({ newsletterId, status, query, isDisabled }) {
+export default function ButtonExportContacts({ newsletterId, status, query, language, isDisabled }) {
 	const [isPending, startTransition] = useTransition();
 
 	function download() {
 		startTransition(async () => {
-			const result = await exportContacts({ newsletterId, status, query });
+			const result = await exportContacts({ newsletterId, status, query, language });
 			if (result?.error) return void toast.error(result.error);
 			window.location.assign(result.url);
 		});

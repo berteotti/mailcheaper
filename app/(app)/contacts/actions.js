@@ -92,12 +92,13 @@ export async function updateContacts(contacts = {}, { status, language } = {}) {
 	return failure ? toFormError(failure) : output;
 }
 
-// A link to the CSV with the list's filters, valid for an hour.
-export async function exportContacts({ newsletterId, status, query } = {}) {
+// A link to the CSV with the list's filters, valid for an hour. Its language is that tag alone, as the list has it.
+export async function exportContacts({ newsletterId, status, query, language } = {}) {
 	const { output, failure } = await runDashboardAction("export_contacts", {
 		...(newsletterId && { newsletter: String(newsletterId) }),
 		...(status && { status }),
 		...(query && { search: String(query) }),
+		...(language && { language: String(language), exactLanguage: true }),
 	});
 	return failure ? toFormError(failure) : { url: output.url, count: output.count };
 }

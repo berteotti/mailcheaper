@@ -20,7 +20,12 @@ export async function GET(request) {
 	const newsletters = new Map(
 		(await getAll("SELECT _id, slug FROM newsletters WHERE accountId = ?", [account._id])).map(({ _id, slug }) => [_id, slug])
 	);
-	const filter = contactSearchFilter(account, { newsletterId: link.newsletterId, query: link.query, language: link.language });
+	const filter = contactSearchFilter(account, {
+		newsletterId: link.newsletterId,
+		query: link.query,
+		language: link.language,
+		exactLanguage: link.exactLanguage,
+	});
 	if (link.status) {
 		filter.where += " AND status = ?";
 		filter.params.push(link.status);

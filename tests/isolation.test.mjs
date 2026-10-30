@@ -256,6 +256,9 @@ describe("lists only show the account's own data", () => {
 		assert.equal(filtered.totalAll, 0, "naming Bob's newsletter in the filter shows nothing");
 		const searched = await m.contactQueries.findContactsPage(aliceAccount, { query: "reader" });
 		assert.equal(searched.contacts.length, 0);
+		const sorted = await m.contactQueries.findContactsPage(aliceAccount, { newsletterId: bobData.newsletterId, sort: "updatedAt", language: "en" });
+		assert.equal(sorted.contacts.length, 0, "nor sorted or filtered by language");
+		assert.deepEqual(await m.contactQueries.countContactsByLanguage(aliceAccount, bobData.newsletterId), [], "nor counted by language");
 		const aliceNewsletterId = (await getOne("SELECT _id FROM newsletters WHERE accountId = ?", [alice.accountId]))._id;
 		for (const query of ["", "reader", "cold"]) {
 			const picked = await as(alice, () => m.campaigns.findPreviewContacts(aliceNewsletterId, query));

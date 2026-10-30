@@ -18,6 +18,7 @@ import HeaderPage from "@/components/HeaderPage";
 import MenuContact from "@/components/MenuContact";
 import ProviderContactSelection from "@/components/ProviderContactSelection";
 import StateEmpty from "@/components/StateEmpty";
+import TableHeadSort from "@/components/TableHeadSort";
 import TextEmpty from "@/components/TextEmpty";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -30,11 +31,19 @@ import {
 	TableRow,
 } from "@/components/ui/table";
 import { getAppUrl } from "@/lib/config";
-import { CONTACTS_PAGE_SIZE, LIVE_STATUSES, contactSearchFilter, countContactsByStatus, findContactsPage } from "@/lib/contacts";
-import { getValue } from "@/lib/db";
+import {
+	CONTACTS_PAGE_SIZE,
+	CONTACT_SORTS,
+	DEFAULT_CONTACT_SORT,
+	LIVE_STATUSES,
+	contactSearchFilter,
+	countContactsByLanguage,
+	countContactsByStatus,
+	findContactsPage,
+} from "@/lib/contacts";
 import { getAddContactCurl } from "@/lib/docs/reference";
-import { formatDate, formatNumber } from "@/lib/format";
-import { getLanguageName, getLanguageTag } from "@/lib/languages";
+import { formatDate, formatNumber, formatRelative } from "@/lib/format";
+import { getLanguageName, getLanguageTag, normalizeLanguage } from "@/lib/languages";
 import { toNewsletterOption } from "@/lib/newsletters";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { CONTACT_STATUSES } from "@/lib/statuses";
@@ -42,7 +51,8 @@ import { cn } from "@/lib/utils";
 
 export const metadata = { title: "Contacts" };
 
-// The open newsletter's contacts. A newsletter in ?newsletter=, from the filter this page had, opens first.
+// The open newsletter's contacts. A newsletter in ?newsletter=, from the filter this page had, opens first. Its language
+// filter finds that tag alone (pt leaves out pt-BR), as the menu counts them.
 export default async function ContactsPage({ searchParams }) {
 	const [view, params] = await Promise.all([getSelectedNewsletter(), searchParams]);
 	openNewsletter(view, params.newsletter, "/contacts");
@@ -50,27 +60,29 @@ export default async function ContactsPage({ searchParams }) {
 	const newsletterId = selected ? String(selected._id) : null;
 	const status = CONTACT_STATUSES.includes(params.status) ? params.status : null;
 	const query = typeof params.q === "string" ? params.q.trim().toLowerCase().slice(0, 254) : "";
+	const language = normalizeLanguage(params.language);
+	const sort = Object.hasOwn(CONTACT_SORTS, params.sort) ? params.sort : null;
+	const order = ["asc", "desc"].includes(params.order) ? params.order : null;
 	const page = Math.max(1, Number.parseInt(params.page, 10) || 1);
 
-	const { contacts, counts, totalAll, total } = newsletterId
-		? await findContactsPage(account, { newsletterId, status, query, page })
-		: { contacts: [], counts: {}, totalAll: 0, total: 0 };
+	const [{ contacts, counts, totalAll, total }, languages] = newsletterId
+		? await Promise.all([
+				findContactsPage(account, { newsletterId, status, query, language, exactLanguage: true, sort, order, page }),
+				countContactsByLanguage(account, newsletterId),
+			])
+		: [{ contacts: [], counts: {}, totalAll: 0, total: 0 }, []];
 	const pageCount = Math.max(1, Math.ceil(total / CONTACTS_PAGE_SIZE));
-	// totalAll counts within the search.
-	const hasContacts =
-		totalAll > 0 ||
-		Boolean(
-			query &&
-				newsletterId &&
-				(await getValue("SELECT 1 FROM contacts WHERE accountId = ? AND newsletterId = ? LIMIT 1", [String(account._id), newsletterId]))
-		);
+	const hasContacts = languages.length > 0;
 	const newsletter = selected && toNewsletterOption(selected);
 	// The address check looks at the whole newsletter, whatever the search.
-	const allCounts = query && hasContacts ? await countContactsByStatus(contactSearchFilter(account, { newsletterId })) : counts;
+	const allCounts =
+		(query || language) && hasContacts ? await countContactsByStatus(contactSearchFilter(account, { newsletterId })) : counts;
 	const liveCount = LIVE_STATUSES.reduce((sum, key) => sum + (allCounts[key] || 0), 0);
+	const sortedBy = sort ?? DEFAULT_CONTACT_SORT;
+	const sortedOrder = order ?? CONTACT_SORTS[sortedBy].order;
 
 	function href(changes) {
-		const next = new URLSearchParams(Object.entries({ status, q: query, page }).filter(([, value]) => value));
+		const next = new URLSearchParams(Object.entries({ status, q: query, language, sort, order, page }).filter(([, value]) => value));
 		for (const [key, value] of Object.entries(changes)) {
 			if (value) next.set(key, value);
 			else next.delete(key);
@@ -79,10 +91,26 @@ export default async function ContactsPage({ searchParams }) {
 		return `/contacts${next.size ? `?${next}` : ""}`;
 	}
 
+	// A column first sorts the list in its own order, then the other way; the URL leaves out what's the default.
+	function sortHead(key, label, { className, align } = {}) {
+		const isSorted = key === sortedBy;
+		const next = isSorted ? (sortedOrder === "asc" ? "desc" : "asc") : CONTACT_SORTS[key].order;
+		const link = href({
+			sort: key === DEFAULT_CONTACT_SORT ? null : key,
+			order: next === CONTACT_SORTS[key].order ? null : next,
+			page: null,
+		});
+		return (
+			<TableHeadSort href={link} order={isSorted ? sortedOrder : null} align={align} className={className}>
+				{label}
+			</TableHeadSort>
+		);
+	}
+
 	return (
 		<>
 			<HeaderPage title="Contacts">
-				<ButtonExportContacts newsletterId={newsletterId} status={status} query={query} isDisabled={total === 0} />
+				<ButtonExportContacts newsletterId={newsletterId} status={status} query={query} language={language} isDisabled={total === 0} />
 				{liveCount > 0 && <DialogCheckContacts newsletter={newsletter} count={liveCount} />}
 				{hasContacts && <DialogEditContacts newsletter={newsletter} newsletterLanguage={getLanguageTag(selected)} />}
 				{hasContacts && <DialogAddContact newsletter={newsletter} />}
@@ -95,7 +123,7 @@ export default async function ContactsPage({ searchParams }) {
 				{hasContacts && (
 					<>
 						<Suspense fallback={<Skeleton className="h-9 w-full rounded-lg" />}>
-							<FilterContacts key={newsletterId} />
+							<FilterContacts key={newsletterId} languages={languages} />
 						</Suspense>
 
 						<nav
@@ -128,7 +156,7 @@ export default async function ContactsPage({ searchParams }) {
 					</>
 				)}
 
-				<ProviderContactSelection key={`${newsletterId}:${status}:${query}`}>
+				<ProviderContactSelection key={`${newsletterId}:${status}:${query}:${language}`}>
 					{!hasContacts ? (
 						<CardAddContacts newsletter={newsletter} curl={getAddContactCurl(getAppUrl(), selected?.slug)} />
 					) : contacts.length === 0 ? (
@@ -144,12 +172,13 @@ export default async function ContactsPage({ searchParams }) {
 												label="Select every contact on this page"
 											/>
 										</TableHead>
-										<TableHead>Contact</TableHead>
-										<TableHead>Status</TableHead>
-										<TableHead className="hidden md:table-cell">Language</TableHead>
-										<TableHead className="hidden text-right lg:table-cell">Opens</TableHead>
-										<TableHead className="hidden text-right lg:table-cell">Clicks</TableHead>
-										<TableHead className="hidden text-right sm:table-cell">Added</TableHead>
+										{sortHead("name", "Contact")}
+										{sortHead("status", "Status")}
+										{sortHead("language", "Language", { className: "hidden md:table-cell" })}
+										{sortHead("opens", "Opens", { className: "hidden text-right lg:table-cell", align: "end" })}
+										{sortHead("clicks", "Clicks", { className: "hidden text-right lg:table-cell", align: "end" })}
+										{sortHead("subscribedAt", "Added", { className: "hidden text-right sm:table-cell", align: "end" })}
+										{sortHead("updatedAt", "Updated", { className: "hidden text-right sm:table-cell", align: "end" })}
 										<TableHead className="w-12 pr-2" />
 									</TableRow>
 								</TableHeader>
@@ -199,6 +228,9 @@ export default async function ContactsPage({ searchParams }) {
 											</TableCell>
 											<TableCell className="hidden text-right text-muted-foreground sm:table-cell">
 												{formatDate(contact.subscribedAt) ?? <TextEmpty />}
+											</TableCell>
+											<TableCell className="hidden text-right text-muted-foreground sm:table-cell" title={formatDate(contact.updatedAt)}>
+												{formatRelative(contact.updatedAt)}
 											</TableCell>
 											<TableCell className="pr-2 text-right">
 												<MenuContact

@@ -565,6 +565,71 @@ describe("contacts", () => {
 		assert.equal((await api(user.key, "GET", "/contacts/lena%40example.org")).body.language, null, "the dashboard's menu");
 	});
 
+	test("contacts sort by any field a page at a time, show when they last changed, and filter one language tag alone", async () => {
+		const user = await customer("sorting-api@example.com");
+		await api(user.key, "POST", "/contacts/import", {
+			consent: true,
+			contacts: [
+				{ email: "bea@example.org", firstName: "Zoe", language: "pt" },
+				{ email: "ana@example.org", language: "pt-PT" },
+				{ email: "cid@example.org", firstName: "Ana", lastName: "Silva", language: "pt-BR" },
+				{ email: "dan@example.org" },
+			],
+		});
+		assert.equal((await api(user.key, "PATCH", "/contacts/bea%40example.org", { status: "unsubscribed" })).body.status, "unsubscribed");
+		const now = Date.now();
+		const change = (email, opens, minutesAgo) =>
+			getOne("UPDATE contacts SET stats = json_set(stats, '$.opens', ?), updatedAt = ? WHERE accountId = ? AND email = ? RETURNING _id", [
+				opens,
+				now - minutesAgo * 60_000,
+				user.accountId,
+				email,
+			]);
+		await change("ana@example.org", 5, 30);
+		await change("bea@example.org", 2, 20);
+		await change("cid@example.org", 9, 10);
+		await change("dan@example.org", 0, 1);
+
+		const emails = async (query) => (await api(user.key, "GET", `/contacts?${query}`)).body.contacts.map(({ email }) => email);
+		assert.deepEqual(await emails("sort=name"), ["cid@example.org", "ana@example.org", "dan@example.org", "bea@example.org"], "Ana Silva, then addresses");
+		assert.deepEqual(await emails("sort=name&order=desc"), ["bea@example.org", "dan@example.org", "ana@example.org", "cid@example.org"]);
+		assert.deepEqual(await emails("sort=email"), ["ana@example.org", "bea@example.org", "cid@example.org", "dan@example.org"]);
+		assert.deepEqual(await emails("sort=language"), ["dan@example.org", "bea@example.org", "cid@example.org", "ana@example.org"], "English, Portuguese, (Brazil), (Portugal)");
+		assert.deepEqual(await emails("sort=opens"), ["cid@example.org", "ana@example.org", "bea@example.org", "dan@example.org"], "most first");
+		assert.equal((await emails("sort=status")).at(-1), "bea@example.org", "active first");
+		assert.deepEqual(await emails("sort=updatedAt"), ["dan@example.org", "cid@example.org", "bea@example.org", "ana@example.org"], "latest first");
+		const dan = (await api(user.key, "GET", "/contacts/dan%40example.org")).body;
+		assert.equal(dan.updatedAt, new Date(now - 60_000).toISOString());
+
+		const pages = [];
+		let cursor = "";
+		do {
+			const { body } = await api(user.key, "GET", `/contacts?sort=name&limit=1${cursor && `&cursor=${cursor}`}`);
+			pages.push(...body.contacts.map(({ email }) => email));
+			cursor = body.nextCursor;
+		} while (cursor);
+		assert.deepEqual(pages, await emails("sort=name"), "a cursor goes on in its sort");
+		const first = (await api(user.key, "GET", "/contacts?sort=opens&limit=2")).body;
+		assert.deepEqual((await api(user.key, "GET", `/contacts?sort=opens&limit=2&cursor=${first.nextCursor}`)).body.contacts.map(({ email }) => email), [
+			"bea@example.org",
+			"dan@example.org",
+		]);
+		assertError(await api(user.key, "GET", `/contacts?sort=email&cursor=${first.nextCursor}`), 400, "validation_failed");
+		const newest = await getOne("SELECT _id, subscribedAt FROM contacts WHERE accountId = ? ORDER BY subscribedAt DESC, _id DESC", [user.accountId]);
+		const legacy = Buffer.from(JSON.stringify([new Date(newest.subscribedAt).toISOString(), newest._id])).toString("base64url");
+		assert.equal((await api(user.key, "GET", `/contacts?cursor=${legacy}`)).body.contacts.length, 3, "a cursor from before sorts still works");
+		assertError(await api(user.key, "GET", "/contacts?sort=source"), 400, "validation_failed");
+
+		assert.equal((await emails("language=pt")).length, 3, "pt finds its variants");
+		assert.deepEqual(await emails("language=pt&exactLanguage=true"), ["bea@example.org"]);
+		assert.deepEqual(await emails("language=pt-BR&exactLanguage=true"), ["cid@example.org"]);
+		const exported = await api(user.key, "GET", "/contacts/export?language=pt&exactLanguage=true");
+		assert.equal(exported.body.count, 1);
+		const lines = (await (await m.exportRoute.GET(new Request(exported.body.url))).text()).trim().split("\r\n");
+		assert.equal(lines.length, 2, "the file has bea alone");
+		assert.match(lines[1], /bea@example\.org/);
+	});
+
 	test("names: on signup and import, changed one at a time, kept by an empty cell, cleared by null, and exported", async () => {
 		const user = await customer("names-api@example.com");
 		const contact = async (email) => (await api(user.key, "GET", `/contacts/${encodeURIComponent(email)}`)).body;
