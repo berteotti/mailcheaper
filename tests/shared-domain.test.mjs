@@ -120,6 +120,10 @@ describe("hosts", () => {
 		assert.deepEqual(outcome(await visit("https://weekly.mailcheap.ai/")), { rewrite: "/archive/weekly" });
 		assert.deepEqual(outcome(await visit("https://weekly.mailcheap.ai/p/first-issue")), { rewrite: "/archive/weekly/p/first-issue" });
 		assert.deepEqual(outcome(await visit("https://weekly.mailcheap.ai/unsubscribe?token=t")), { next: true });
+		// A domain check asks a customer's host for its proof before the host is verified.
+		for (const url of ["https://weekly.mailcheap.ai/api/host-proof", "https://news.not-yet.example/api/host-proof"]) {
+			assert.deepEqual(outcome(await visit(url)), { next: true }, url);
+		}
 		for (const path of ["/signin", "/api/auth/get-session", "/api/uploads", "/campaigns", "/mcp", "/api/v1/newsletters"]) {
 			assert.deepEqual(outcome(await visit(`https://weekly.mailcheap.ai${path}`)), { status: 404 }, path);
 		}

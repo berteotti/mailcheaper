@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { execute, getOne, getValue } from "../lib/db.js";
 import { activate, addVerifiedDomain, as, callApi, catchRedirect, findAccount, form, platformEmails, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
-import { cnames } from "./stubs/dns-check.mjs";
+import { liveHosts } from "./stubs/host-check.mjs";
 import { calls, sent, state } from "./stubs/ses.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
 
@@ -262,7 +262,7 @@ describe("own domains", () => {
 		assert.match((await as(user, () => m.campaigns.sendTestCampaign(id))).error, /owner-mail.com isn't verified yet/);
 
 		state.identities.get("owner-mail.com").verified = true;
-		cnames.set("news.owner-mail.com", ["cname.mailcheap.ai"]);
+		liveHosts.add("news.owner-mail.com");
 		assert.deepEqual(await as(user, () => m.domains.checkDomainAction(String(domain._id))), { ok: true, verified: true, archiveHostVerified: true });
 		assert.equal((await findNewsletter(user)).archiveHost, "news.owner-mail.com");
 
@@ -401,5 +401,56 @@ describe("hosts", () => {
 		// Unsubscribe and tracking keep working after the plan ends.
 		await execute("UPDATE accounts SET subscriptionStatus = 'canceled' WHERE _id = ?", [user.accountId]);
 		assert.deepEqual(await resolve("hosts-news.mailcheapmail.com"), { isArchiveHost: true, slug: "hosts-news" });
+	});
+
+	test("the archive and links move to the subdomain once it reaches this server, and back when it stops", async () => {
+		const user = await customer("late-host@example.com", "late-news");
+		const domain = await addVerifiedDomain(user, "late-host.com", { isArchiveLive: false });
+		await saveFrom(user, "late-news", "hi@late-host.com");
+		const check = () => as(user, () => m.domains.checkDomainAction(String(domain._id)));
+		assert.deepEqual(await check(), { ok: true, verified: true, archiveHostVerified: false }, "a CNAME may be in, but nothing answers for the host");
+		assert.equal((await findNewsletter(user)).archiveHost, null);
+
+		liveHosts.add("news.late-host.com");
+		assert.deepEqual(await withEnv({ ARCHIVE_CNAME_TARGET: "" }, check), { ok: true, verified: true, archiveHostVerified: false }, "a server without archive subdomains");
+		assert.deepEqual(await check(), { ok: true, verified: true, archiveHostVerified: true });
+		assert.equal((await findNewsletter(user)).archiveHost, "news.late-host.com");
+
+		liveHosts.delete("news.late-host.com");
+		assert.deepEqual(await check(), { ok: true, verified: true, archiveHostVerified: false });
+		assert.equal((await findNewsletter(user)).archiveHost, null, "new emails' links go back to the app's host");
+	});
+
+	test("a host passes only with this server's proof for it, without following redirects", async () => {
+		const { isServedHere } = await import("../lib/host-check.js");
+		const { GET } = await import("../app/api/host-proof/route.js");
+		const proofFrom = (url) => GET(new Request(url)).text();
+		const otherServer = await withEnv({ BETTER_AUTH_SECRET: "another-server-secret-0123456789abcdef" }, () => proofFrom("https://news.proof.example/api/host-proof"));
+		const realFetch = globalThis.fetch;
+		const asked = [];
+		let answer;
+		globalThis.fetch = async (url, init) => {
+			asked.push({ url: String(url), redirect: init?.redirect });
+			return answer(String(url));
+		};
+		try {
+			answer = (url) => GET(new Request(url));
+			assert.equal(await isServedHere("news.proof.example"), true);
+			assert.deepEqual(asked, [{ url: "https://news.proof.example/api/host-proof", redirect: "manual" }]);
+			assert.equal(await proofFrom("https://News.Proof.example:443/api/host-proof"), await proofFrom("https://news.proof.example/api/host-proof"));
+
+			answer = async () => new Response(await proofFrom("https://news.other.example/api/host-proof"));
+			assert.equal(await isServedHere("news.proof.example"), false, "another host's proof");
+			answer = () => new Response(otherServer);
+			assert.equal(await isServedHere("news.proof.example"), false, "another server's proof");
+			answer = () => new Response(null, { status: 301, headers: { location: "https://mail.example.com/api/host-proof" } });
+			assert.equal(await isServedHere("news.proof.example"), false, "a redirect");
+			answer = () => new Response("error code: 522", { status: 522 });
+			assert.equal(await isServedHere("news.proof.example"), false, "Cloudflare with nothing behind the host");
+			answer = () => Promise.reject(new TypeError("fetch failed"));
+			assert.equal(await isServedHere("news.proof.example"), false, "no connection");
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 });

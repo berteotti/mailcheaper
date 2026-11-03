@@ -205,15 +205,15 @@ export async function activate(user, { plan = "starter", interval = "month", ...
 	return user.account;
 }
 
-// A domain added through the Domains page, with its DNS records in and its archive subdomain pointed at us.
+// A domain added through the Domains page, with its DNS records in and its archive subdomain reaching us.
 export async function addVerifiedDomain(user, domain, { archiveHost = `news.${domain}`, isArchiveLive = true } = {}) {
 	const { addDomain, checkDomain } = await import("../../lib/domains.js");
 	const { verifyIdentity } = await import("../stubs/ses.mjs");
-	const { cnames } = await import("../stubs/dns-check.mjs");
+	const { liveHosts } = await import("../stubs/host-check.mjs");
 	const account = await findAccount(user.accountId);
 	const added = await addDomain({ account, domain, archiveHost });
 	verifyIdentity(domain);
-	if (isArchiveLive) cnames.set(archiveHost, ["cname.mailcheap.ai"]);
+	if (isArchiveLive) liveHosts.add(archiveHost);
 	user.account = await findAccount(user.accountId);
 	return checkDomain({ account: user.account, domainId: added._id });
 }

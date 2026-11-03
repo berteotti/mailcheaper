@@ -9,11 +9,12 @@ import { siteExtensions } from "@/lib/site-extensions";
 const NOT_FOUND_PATH = "/_not-on-this-server";
 
 // Reachable without a session: recipients, mail providers, AWS, Stripe, API-key and OAuth clients (REST and
-// MCP, OAuth discovery), the docs, uploads served by the app (/media), uptime checks and the jobs Worker (its
-// internal routes check their own key). The consent page checks the session itself, so a signed-out visitor
+// MCP, OAuth discovery), the docs, uploads served by the app (/media), uptime and domain checks and the jobs Worker
+// (its internal routes check their own key). The consent page checks the session itself, so a signed-out visitor
 // goes to sign-in with the app's request.
 const PUBLIC_PATHS = [
 	/^\/api\/health$/,
+	/^\/api\/host-proof$/,
 	/^\/favicon\.ico$/,
 	/^\/(robots\.txt|sitemap\.xml)$/,
 	/^\/opengraph-image(-\w+)?$/,
@@ -41,7 +42,9 @@ const PUBLIC_PATHS = [
 ];
 
 // A newsletter's host carries its archive and the links in its emails, never the dashboard, not even its login page.
+// Its proof answers before the host is verified too: a domain check asks for it to verify the host.
 const ARCHIVE_HOST_PATHS = [
+	/^\/api\/host-proof$/,
 	/^\/unsubscribe$/,
 	/^\/api\/unsubscribe$/,
 	/^\/api\/views$/,

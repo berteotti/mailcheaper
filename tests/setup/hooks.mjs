@@ -20,6 +20,7 @@ const STUBS = {
 	"@better-auth/cimd/node": stub("cimd-node.mjs"),
 	"@/lib/ses": stub("ses.mjs"),
 	"@/lib/dns-check": stub("dns-check.mjs"),
+	"@/lib/host-check": stub("host-check.mjs"),
 	"@/lib/mail-domains": stub("mail-domains.mjs"),
 	"@/lib/dns-broker": stub("dns-broker.mjs"),
 	"@/lib/remote-image": stub("remote-image.mjs"),

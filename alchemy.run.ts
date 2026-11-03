@@ -11,8 +11,10 @@ import * as Redacted from "effect/Redacted";
 // Must match worker/jobs.js.
 const MINUTE_CRON = "* * * * *";
 const BACKUP_CRON = "17 3 * * *";
-// nodejs_compat is on by default from 2026-08-04 (and Vinext adds it itself).
-const COMPATIBILITY = { date: "2026-10-09", flags: [] };
+// nodejs_compat is on by default from 2026-08-04 (and Vinext adds it itself). With global_fetch_strictly_public, a
+// fetch to a host on the Worker's own zone goes through Cloudflare like any other, Workers included, instead of
+// straight to the zone's origin: a domain check reaches the archive subdomains the app Worker answers for.
+const COMPATIBILITY = { date: "2026-10-09", flags: ["global_fetch_strictly_public"] };
 const optional = (name: string) => Config.String(name).pipe(Config.withDefault(""));
 // Without SES keys the SDK has no credentials in a Worker, so sends fail until they are set.
 const optionalSecret = (name: string) => Config.Redacted(name).pipe(Config.withDefault(Redacted.make("")));
