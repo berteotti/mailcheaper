@@ -1,10 +1,11 @@
 "use client";
 
 import { useActionState, useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
-import { ExternalLink, FlaskConical, Loader2 } from "lucide-react";
+import { ExternalLink, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { saveNewsletter, sendWelcomeTest } from "@/app/(app)/newsletters/actions";
 import ButtonPreview from "@/components/ButtonPreview";
+import ButtonSendTest from "@/components/ButtonSendTest";
 import InputImage from "@/components/InputImage";
 import PreviewEmail from "@/components/PreviewEmail";
 import StatusSaved from "@/components/StatusSaved";
@@ -30,7 +31,7 @@ import { prefillWelcome } from "@/lib/welcome-content";
 const IMAGE_PREVIEW_PATTERN = /^(https:\/\/\S+\.\S{2,}\/\S+|\/\S+\.\w{3,4})$/;
 
 // footer: what goes after the sections, above the save bar.
-export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testEmail, cleanupTotals, footer }) {
+export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testRecipients, cleanupTotals, footer }) {
 	const paywall = usePaywall();
 	const hasPlan = paywall?.hasPlan ?? true;
 	const archiveHost = domains.find(({ archiveHostVerified }) => archiveHostVerified)?.archiveHost;
@@ -132,12 +133,12 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 		};
 	}
 
-	function sendTest() {
+	function sendTest(to) {
 		if (!hasPlan) return paywall.open("test");
 		startTesting(async () => {
-			const result = await sendWelcomeTest(newsletter._id);
+			const result = await sendWelcomeTest(newsletter._id, to);
 			if (result?.error) toast.error(result.error);
-			else toast.success(`Test sent to ${testEmail}`);
+			else toast.success(`Test sent to ${to}`);
 		});
 	}
 
@@ -367,12 +368,19 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 				{newsletter && (
 					<div className="flex items-center justify-between gap-3 px-4 py-3">
 						<p className="text-xs wrap-anywhere text-muted-foreground">
-							{isSendingEnabled || !hasPlan ? `Sends the saved version to ${testEmail}` : "Sending is off"}
+							{isSendingEnabled || !hasPlan
+								? `Sends the saved version to ${testRecipients.length > 1 ? "you or someone in your organization" : testRecipients[0].email}`
+								: "Sending is off"}
 						</p>
-						<Button type="button" variant="outline" size="sm" onClick={sendTest} disabled={(hasPlan && !isSendingEnabled) || isTesting}>
-							{isTesting ? <Loader2 className="animate-spin" /> : <FlaskConical />}
+						<ButtonSendTest
+							recipients={testRecipients}
+							isTesting={isTesting}
+							disabled={(hasPlan && !isSendingEnabled) || isTesting}
+							size="sm"
+							onSend={sendTest}
+						>
 							Send test
-						</Button>
+						</ButtonSendTest>
 					</div>
 				)}
 			</Section>

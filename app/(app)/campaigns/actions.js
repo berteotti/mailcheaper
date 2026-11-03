@@ -97,8 +97,12 @@ export async function findPreviewContacts(newsletterId, query) {
 	};
 }
 
-export async function sendTestCampaign(id, language) {
-	const { failure } = await runDashboardAction("send_test_email", { id: String(id), ...(language && { language: String(language) }) });
+export async function sendTestCampaign(id, language, to) {
+	const { failure } = await runDashboardAction("send_test_email", {
+		id: String(id),
+		...(language && { language: String(language) }),
+		...(to && { to: String(to) }),
+	});
 	revalidatePath(`/campaigns/${id}`);
 	return failure ? toFormError(failure) : { ok: true };
 }

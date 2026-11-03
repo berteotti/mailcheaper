@@ -5,6 +5,7 @@ import { after, before, describe, test } from "node:test";
 import { execute, getAll, getOne, getValue } from "../lib/db.js";
 import { activate, as, callApi, catchRedirect, form, mockStripe, platformEmails, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
 import { RedirectError } from "./stubs/next-navigation.mjs";
+import { sent as sesEmails } from "./stubs/ses.mjs";
 
 // Organizations through the real pages' actions: inviting people, joining, roles, leaving and removing, what members
 // can't do, deleting an organization with several people, and organizations kept apart.
@@ -74,6 +75,8 @@ before(async () => {
 		restore: await import("../app/restore/actions.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		billing: await import("../app/(account)/billing/actions.js"),
+		campaigns: await import("../app/(app)/campaigns/actions.js"),
+		newsletters: await import("../app/(app)/newsletters/actions.js"),
 		auth: await import("../lib/auth.js"),
 		organizations: await import("../lib/organizations.js"),
 		oauth: await import("../lib/oauth.js"),
@@ -243,6 +246,46 @@ describe("roles", () => {
 		await m.alerts.sendAlert({ accountId: owner.accountId, key: "owners", title: "Something to see", detail: "For the owners" });
 		const sent = platformEmails.slice(before).flatMap(({ to }) => to).sort();
 		assert.deepEqual(sent, ["alert-owner@example.com", "alert-second@example.com"]);
+	});
+});
+
+describe("test emails", () => {
+	test("go to whoever asks, or to anyone in the organization they name, and never outside it", async () => {
+		const owner = await signIn("tests-owner@example.com");
+		await activate(owner);
+		const member = await invitedMember(owner, "tests-member@example.com");
+		const outsider = await signIn("tests-outsider@example.com");
+		const settings = { name: "Tests", slug: "tests-org", postalAddress: "1 Main St, Paris", welcomeSubject: "Welcome", welcomeMarkdown: "Glad you're here." };
+		const newsletterId = (await as(owner, () => catchRedirect(m.newsletters.saveNewsletter(null, form(settings))))).split("/").at(-1);
+		const campaignId = (await as(member, () => catchRedirect(m.campaigns.createCampaign(newsletterId)))).split("/").at(-1);
+		await as(member, () => m.campaigns.saveCampaign(campaignId, { subject: "Issue", previewText: "", body: "<p>Hello</p>" }));
+		const sentTo = () => sesEmails.at(-1).to;
+
+		assert.deepEqual(await as(member, () => m.campaigns.sendTestCampaign(campaignId)), { ok: true });
+		assert.equal(sentTo(), member.email, "the person asking, by default");
+		assert.deepEqual(await as(member, () => m.campaigns.sendTestCampaign(campaignId, null, " Tests-Owner@Example.com ")), { ok: true });
+		assert.equal(sentTo(), owner.email);
+		assert.deepEqual(await as(owner, () => m.newsletters.sendWelcomeTest(newsletterId, member.email)), { ok: true });
+		assert.equal(sentTo(), member.email);
+
+		const before = sesEmails.length;
+		const notInIt = { error: "to: use the email address of someone in the organization" };
+		for (const to of [outsider.email, "nobody@example.com", "not an email"]) {
+			assert.deepEqual(await as(owner, () => m.campaigns.sendTestCampaign(campaignId, null, to)), notInIt, to);
+			assert.deepEqual(await as(owner, () => m.newsletters.sendWelcomeTest(newsletterId, to)), notInIt, to);
+		}
+		assert.equal(sesEmails.length, before, "nothing went out");
+
+		const { key } = await as(member, () => m.apiKeys.createApiKey(null, form({ name: "Tester", level: "full" })));
+		assert.equal((await callApi("POST", `/api/v1/campaigns/${campaignId}/test`, { key })).body.sentTo, owner.email, "an API key's go to the first owner");
+		assert.equal((await callApi("POST", `/api/v1/campaigns/${campaignId}/test`, { key, body: { to: member.email } })).body.sentTo, member.email);
+		assert.equal((await callApi("POST", `/api/v1/newsletters/tests-org/welcome-test`, { key, body: { to: member.email } })).body.sentTo, member.email);
+		const outside = await callApi("POST", `/api/v1/campaigns/${campaignId}/test`, { key, body: { to: outsider.email } });
+		assert.deepEqual([outside.status, outside.body.error.code], [400, "validation_failed"]);
+		assert.equal(sentTo(), member.email);
+
+		const recipients = await m.organizations.listTestRecipients((await findMember(member)).organizationId, { id: member.userId });
+		assert.deepEqual(recipients.map(({ email }) => email), [member.email, owner.email], "the dashboard's menu: the person signed in first");
 	});
 });
 

@@ -11,6 +11,7 @@ import { getSharedDomain, isSendingEnabled } from "@/lib/config";
 import { getOne } from "@/lib/db";
 import { getNewsletterDeletionBlockers } from "@/lib/newsletter-deletion";
 import { ADD_NEWSLETTER_PATH } from "@/lib/newsletters";
+import { listTestRecipients } from "@/lib/organizations";
 import { findAccountDomains } from "@/lib/sender";
 import { getSelectedNewsletter } from "@/lib/selected-newsletter";
 import { serialize } from "@/lib/serialize";
@@ -20,13 +21,14 @@ export const metadata = { title: "Settings" };
 // The open newsletter's settings; /newsletters/<id> opens another one first. The form starts over for each
 // newsletter: its fields keep what they were given when it first rendered.
 export default async function SettingsPage() {
-	const { user, account, selected } = await getSelectedNewsletter();
+	const { user, account, organization, selected } = await getSelectedNewsletter();
 	if (!selected) redirect(ADD_NEWSLETTER_PATH);
-	const [newsletter, domains, cleanupTotals, deletionBlockers] = await Promise.all([
+	const [newsletter, domains, cleanupTotals, deletionBlockers, testRecipients] = await Promise.all([
 		getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [account._id, selected._id]),
 		findAccountDomains(account._id),
 		getCleanupTotals(account, selected._id),
 		getNewsletterDeletionBlockers(account, selected),
+		listTestRecipients(organization._id, user),
 	]);
 
 	return (
@@ -45,7 +47,7 @@ export default async function SettingsPage() {
 				domains={serialize(domains)}
 				sharedDomain={getSharedDomain()}
 				isSendingEnabled={isSendingEnabled()}
-				testEmail={user.email}
+				testRecipients={testRecipients}
 				cleanupTotals={cleanupTotals}
 				footer={<CardDeleteNewsletter newsletter={newsletter} blockers={deletionBlockers} stagger={6} />}
 			/>

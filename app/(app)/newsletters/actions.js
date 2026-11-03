@@ -54,8 +54,8 @@ function readSettings(formData) {
 	};
 }
 
-export async function sendWelcomeTest(newsletterId) {
-	const { failure } = await runDashboardAction("send_welcome_test_email", { id: String(newsletterId ?? "") });
+export async function sendWelcomeTest(newsletterId, to) {
+	const { failure } = await runDashboardAction("send_welcome_test_email", { id: String(newsletterId ?? ""), ...(to && { to: String(to) }) });
 	return failure ? toFormError(failure) : { ok: true };
 }
 

@@ -19,6 +19,7 @@ import {
 import { isSendingEnabled } from "@/lib/config";
 import { getOne } from "@/lib/db";
 import { getCampaignLanguage } from "@/lib/editions";
+import { listTestRecipients } from "@/lib/organizations";
 import { getSelectedNewsletter, openNewsletter } from "@/lib/selected-newsletter";
 import { getWarmup } from "@/lib/send-spread";
 import { serialize } from "@/lib/serialize";
@@ -35,7 +36,7 @@ const MAX_RECIPIENTS = 500;
 
 export default async function CampaignPage({ params, searchParams }) {
 	const [{ id }, query = {}, view] = await Promise.all([params, searchParams, getSelectedNewsletter()]);
-	const { user, account } = view;
+	const { user, account, organization } = view;
 	if (!isObjectIdString(id)) notFound();
 
 	const campaign = await getOne("SELECT * FROM campaigns WHERE accountId = ? AND _id = ?", [account._id, id.toLowerCase()]);
@@ -83,12 +84,13 @@ export default async function CampaignPage({ params, searchParams }) {
 		);
 	}
 
-	const [{ audience, reached }, sender, sendTimes, place, newContacts] = await Promise.all([
+	const [{ audience, reached }, sender, sendTimes, place, newContacts, testRecipients] = await Promise.all([
 		getCampaignAudience(campaign, newsletter, editions),
 		loadSender(account, newsletter),
 		getSendTimes(campaign),
 		countStartedCampaigns(account),
 		countNewContacts(account, newsletter._id),
+		listTestRecipients(organization._id, user),
 	]);
 
 	return (
@@ -101,7 +103,7 @@ export default async function CampaignPage({ params, searchParams }) {
 			audienceCount={reached}
 			senderProblem={sender.problem ?? null}
 			isSendingEnabled={isSendingEnabled()}
-			testEmail={user.email}
+			testRecipients={testRecipients}
 			sendTimes={sendTimes}
 			archiveUrlBase={newsletter.archiveEnabled ? getArchiveUrls(newsletter).absolutePost("") : null}
 			planProblem={plan.problem}

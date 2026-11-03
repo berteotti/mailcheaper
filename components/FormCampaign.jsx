@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useDeferredValue, useEffect, useEffectEvent, useMemo, useRef, useState, useTransition } from "react";
-import { Check, CircleAlert, Copy, FlaskConical, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
+import { Check, CircleAlert, Copy, MoreHorizontal, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
 	addCampaignEdition,
@@ -15,6 +15,7 @@ import {
 import AvatarNewsletter from "@/components/AvatarNewsletter";
 import BadgeStatus from "@/components/BadgeStatus";
 import ButtonPreview from "@/components/ButtonPreview";
+import ButtonSendTest from "@/components/ButtonSendTest";
 import DialogDeleteEdition from "@/components/DialogDeleteEdition";
 import DialogDiscardCampaign from "@/components/DialogDiscardCampaign";
 import DialogScheduleCampaign from "@/components/DialogScheduleCampaign";
@@ -70,7 +71,7 @@ export default function FormCampaign({
 	audienceCount,
 	senderProblem,
 	isSendingEnabled,
-	testEmail,
+	testRecipients,
 	sendTimes,
 	archiveUrlBase,
 	planProblem,
@@ -180,14 +181,14 @@ export default function FormCampaign({
 		return false;
 	}
 
-	function sendTest() {
+	function sendTest(to) {
 		if (!hasPlan) return paywall.open("test");
 		startTesting(async () => {
 			if (isUploading) return void toast.error(UPLOADING_MESSAGE);
 			if (!(await persist())) return;
-			const result = await sendTestCampaign(campaign._id, active === OWN ? null : active);
+			const result = await sendTestCampaign(campaign._id, active === OWN ? null : active, to);
 			if (result?.error) toastError(result);
-			else toast.success(`Test sent to ${testEmail}`);
+			else toast.success(`Test sent to ${to}`);
 		});
 	}
 
@@ -278,19 +279,19 @@ export default function FormCampaign({
 				<Tooltip>
 					<TooltipTrigger asChild>
 						<span tabIndex={isSendingEnabled || !hasPlan ? -1 : 0} className="rounded-lg">
-							<Button variant="outline" onClick={sendTest} disabled={(hasPlan && !isSendingEnabled) || isTesting}>
-								{isTesting ? (
-									<Loader2 data-icon="inline-start" className="animate-spin" />
-								) : (
-									<FlaskConical data-icon="inline-start" />
-								)}
+							<ButtonSendTest
+								recipients={testRecipients}
+								isTesting={isTesting}
+								disabled={(hasPlan && !isSendingEnabled) || isTesting}
+								onSend={sendTest}
+							>
 								Test
-							</Button>
+							</ButtonSendTest>
 						</span>
 					</TooltipTrigger>
 					<TooltipContent>
 						{isSendingEnabled || !hasPlan
-							? `Sends the ${getLanguageName(activeLanguage)} email to ${testEmail}`
+							? `Sends the ${getLanguageName(activeLanguage)} email to ${testRecipients.length > 1 ? "you or someone in your organization" : testRecipients[0].email}`
 							: "Sending is off"}
 					</TooltipContent>
 				</Tooltip>

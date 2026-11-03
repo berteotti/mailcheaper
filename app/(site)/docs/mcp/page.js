@@ -65,7 +65,7 @@ export default function McpPage() {
 					<h2 className="font-semibold tracking-tight">Sends can&apos;t be undone</h2>
 					<p className="mt-2 text-[15px] leading-7 text-pretty text-foreground/80">
 						{sendTools.map(({ name }) => name).join(", ")} are marked destructive, and their descriptions ask the assistant to check with
-						you first. Most clients ask before running them. send_test_email sends only to you, or to the organization&apos;s first owner with an API key.
+						you first. Most clients ask before running them. send_test_email sends only to people in your organization: you, or the first owner with an API key, unless it names someone else in it.
 					</p>
 				</section>
 
