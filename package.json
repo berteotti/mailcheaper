@@ -65,7 +65,6 @@
     "effect": "4.0.4",
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
-    "shadcn": "^4.21.1",
     "tailwindcss": "^4",
     "vite": "8.0.7"
   }
