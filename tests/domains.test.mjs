@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { execute, getOne, getValue } from "../lib/db.js";
 import { activate, addVerifiedDomain, as, callApi, catchRedirect, findAccount, form, platformEmails, queued, signIn, startTestApp, withEnv } from "./helpers/app.mjs";
+import { txts } from "./stubs/dns-check.mjs";
 import { liveHosts } from "./stubs/host-check.mjs";
 import { calls, sent, state } from "./stubs/ses.mjs";
 import { dnsRecords } from "./stubs/dns-broker.mjs";
@@ -60,6 +61,8 @@ before(async () => {
 		campaigns: await import("../app/(app)/campaigns/actions.js"),
 		contacts: await import("../app/(app)/contacts/actions.js"),
 		domains: await import("../app/(app)/domains/actions.js"),
+		domainsPage: await import("../app/(app)/domains/page.js"),
+		dashboard: await import("../lib/actions/dashboard.js"),
 		apiKeys: await import("../app/(app)/api-keys/actions.js"),
 		jobs: (await import("../worker/jobs.js")).default,
 		billing: await import("../lib/billing.js"),
@@ -419,6 +422,62 @@ describe("hosts", () => {
 		liveHosts.delete("news.late-host.com");
 		assert.deepEqual(await check(), { ok: true, verified: true, archiveHostVerified: false });
 		assert.equal((await findNewsletter(user)).archiveHost, null, "new emails' links go back to the app's host");
+	});
+
+	test("every check looks up DMARC on the domain, else its parent, and a lookup that fails keeps the last answer", async () => {
+		const user = await customer("dmarc@example.com", "dmarc-news");
+		assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain: "mail.dmarc-parent.com" }))), { ok: true, domain: "mail.dmarc-parent.com" });
+		const { _id } = await findDomain(user, "mail.dmarc-parent.com");
+		async function check() {
+			const { output } = await as(user, () => m.dashboard.runDashboardAction("check_domain", { id: String(_id) }));
+			return output.setup.find(({ key }) => key === "dmarc").status;
+		}
+
+		assert.equal(await check(), "Recommended");
+		txts.set("_dmarc.dmarc-parent.com", [["v=DMARC1; p=quarantine; ", "rua=mailto:reports@dmarc-parent.com"]]);
+		assert.equal(await check(), "Found on dmarc-parent.com", "the parent's record covers its subdomains");
+		txts.set("_dmarc.mail.dmarc-parent.com", [["v=DMARC1; p=none;"], ["v=DMARC1; p=reject;"]]);
+		assert.equal(await check(), "More than one record, keep one", "the domain's own records come first");
+		txts.set("_dmarc.mail.dmarc-parent.com", [["v=DMARC1; p=none;"]]);
+		assert.equal(await check(), "Found");
+		txts.set("_dmarc.mail.dmarc-parent.com", null);
+		assert.equal(await check(), "Found", "the resolver failed: nothing changes");
+		txts.delete("_dmarc.mail.dmarc-parent.com");
+		txts.delete("_dmarc.dmarc-parent.com");
+		assert.equal(await check(), "Recommended");
+		assert.deepEqual((await findDomain(user, "mail.dmarc-parent.com")).dmarc, { status: "missing" });
+	});
+
+	test("the Domains page reads a domain still being set up again, at most once a minute, and leaves the archive to Check now", async () => {
+		const user = await customer("page-read@example.com", "page-read-news");
+		assert.deepEqual(await as(user, () => m.domains.addDomainAction(null, form({ domain: "page-read.com" }))), { ok: true, domain: "page-read.com" });
+		const reads = () => calls.filter(({ name, args }) => name === "getDomainIdentity" && args === "page-read.com").length;
+		const longAgo = new Date(Date.now() - 120_000);
+		const setLongAgo = (fields) => execute(`UPDATE domains SET ${fields.map((field) => `${field} = ?`).join(", ")} WHERE accountId = ? AND domain = ?`, [
+			...fields.map(() => longAgo.getTime()),
+			user.accountId,
+			"page-read.com",
+		]);
+		const openPage = () => as(user, () => m.domainsPage.default());
+		state.identities.get("page-read.com").verified = true;
+		Object.assign(state.identities.get("page-read.com"), { dkimStatus: "SUCCESS", mailFromStatus: "SUCCESS" });
+		txts.set("_dmarc.page-read.com", [["v=DMARC1; p=none;"]]);
+		liveHosts.add("news.page-read.com");
+
+		const before = reads();
+		await openPage();
+		assert.equal(reads(), before, "checked a moment ago: not read again yet");
+		await setLongAgo(["checkedAt"]);
+		await openPage();
+		assert.equal(reads(), before + 1);
+		const read = await findDomain(user, "page-read.com");
+		assert.deepEqual([read.verified, read.mailFromStatus, read.dmarc?.status], [true, "SUCCESS", "found"]);
+		assert.ok(read.readAt instanceof Date);
+		assert.equal(read.archiveHostVerified, false, "moving the archive refreshes its cached pages, which can't happen while a page renders");
+
+		await setLongAgo(["checkedAt", "readAt"]);
+		await openPage();
+		assert.equal(reads(), before + 1, "set up, DMARC included: left alone");
 	});
 
 	test("a host passes only with this server's proof for it, without following redirects", async () => {
