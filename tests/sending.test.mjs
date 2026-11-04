@@ -147,7 +147,7 @@ test("from names are quoted, encoded, and can't inject headers", () => {
 });
 
 test("a campaign pauses over the pause level and blocks its account over the block level", () => {
-	assert.equal(LIMITS.pause.bounceRate, 0.02);
+	assert.equal(LIMITS.pause.bounceRate, 0.025);
 	assert.equal(LIMITS.block.complaintRate, 0.003);
 
 	assert.equal(getCampaignRateProblem(), null);
@@ -155,7 +155,7 @@ test("a campaign pauses over the pause level and blocks its account over the blo
 	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 5 }).level, "pause");
 	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 10 }).level, "block");
 	assert.equal(getCampaignRateProblem({ sent: 1000, complained: 1 }), null, "one complaint never pauses");
-	assert.equal(getCampaignRateProblem({ sent: 5000, bounced: 99, complained: 4 }), null);
+	assert.equal(getCampaignRateProblem({ sent: 5000, bounced: 124, complained: 4 }), null);
 	assert.equal(getCampaignRateProblem({ sent: 100, bounced: 10 }).reason, "Bounce rate of 10.00% on a campaign (limit 5.00%)");
 });
 

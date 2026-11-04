@@ -40,8 +40,8 @@ test("disabled sending and high-impact findings pause; the rest is recorded", ()
 
 test("the 7-day check holds a send's levels over the account's last 7 days", () => {
 	const level = (counts) => getAccountRateProblem(counts)?.level ?? null;
-	assert.equal(level({ sent: 1000, delivered: 980, bounced: 20, complained: 1 }), null, "exactly 2%, and one complaint");
-	assert.equal(level({ sent: 1000, delivered: 970, bounced: 21 }), "pause");
+	assert.equal(level({ sent: 1000, delivered: 975, bounced: 25, complained: 1 }), null, "exactly 2.5%, and one complaint");
+	assert.equal(level({ sent: 1000, delivered: 965, bounced: 26 }), "pause");
 	assert.equal(level({ sent: 200, delivered: 200, complained: 2 }), "pause", "2 complaints warn, they don't block");
 	assert.equal(getAccountRateProblem({ sent: 200, complained: 3 }).reason, "Complaint rate of 1.50% over the last 7 days (limit 0.30%)");
 	assert.equal(level({ sent: 5000, delivered: 4900, complained: 3 }), null, "3 in 5,000 is under both");
@@ -202,25 +202,25 @@ describe("per-account events", () => {
 
 	test("bounces over 7 days warn the owner at the pause level, and block the account at the block level", async () => {
 		const user = await customer("bouncy@example.com", "bouncy");
-		const messages = await sentMessages(user, 600, (index) => (index < 12 ? { bouncedAt: Date.now(), status: "bounced" } : {}));
+		const messages = await sentMessages(user, 600, (index) => (index < 15 ? { bouncedAt: Date.now(), status: "bounced" } : {}));
 		await execute("UPDATE accounts SET health = '{}' WHERE _id = ?", [user.accountId]);
 		const emailsBefore = platformEmails.length;
 		await bounce({ user, message: messages[599] });
 
 		const warned = await findAccount(user.accountId);
-		assert.equal(warned.status, "active", "13 bounces of 600, at 2.17%: nothing stops");
+		assert.equal(warned.status, "active", "16 bounces of 600, at 2.67%: nothing stops");
 		assert.equal(warned.health.sent, 600);
-		assert.ok(Math.abs(warned.health.bounceRate - 13 / 600) < 1e-9);
+		assert.ok(Math.abs(warned.health.bounceRate - 16 / 600) < 1e-9);
 		const emails = platformEmails.slice(emailsBefore);
 		const warning = emails.find(({ subject }) => subject === "[MailCheap] Bounces or complaints are high");
 		assert.deepEqual(warning.to, ["bouncy@example.com"]);
-		assert.match(warning.text, /Bounce rate of 2.17% over the last 7 days \(limit 2.00%\)\. Nothing is paused, but at 5.00% with 10 bounces the account is blocked/);
+		assert.match(warning.text, /Bounce rate of 2.67% over the last 7 days \(limit 2.50%\)\. Nothing is paused, but at 5.00% with 10 bounces the account is blocked/);
 		assert.equal(emails.some(({ to }) => to.includes("admin@example.com")), false, "the admins only hear of blocks");
 
 		await execute("UPDATE messages SET bouncedAt = ?, status = 'bounced' WHERE accountId = ? AND _id IN (SELECT value FROM json_each(?))", [
 			Date.now(),
 			user.accountId,
-			JSON.stringify(messages.slice(12, 36).map(({ _id }) => _id)),
+			JSON.stringify(messages.slice(15, 36).map(({ _id }) => _id)),
 		]);
 		await execute("UPDATE accounts SET health = json_remove(health, '$.checkedAt') WHERE _id = ?", [user.accountId]);
 		await bounce({ user, message: messages[598] });

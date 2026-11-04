@@ -49,7 +49,7 @@ MailCheap is the rest of what a newsletter needs, in one Next.js app on Cloudfla
 
 - Bounce and complaint handling, and a suppression list per account.
 - On SES, Auto Validation: SES checks each address as it's sent and sends nothing to a mailbox that likely doesn't exist. MailCheap suppresses the address like a hard bounce, without counting it in the bounce rates. SES charges $0.01 per 1,000 addresses checked.
-- A send pauses past 2% hard bounces (at least 5) or 0.08% complaints (at least 2), and its owner gets an email and can resume it. One complaint alone never stops anything.
+- A send pauses past 2.5% hard bounces (at least 5) or 0.08% complaints (at least 2), and its owner gets an email and can resume it. One complaint alone never stops anything.
 - Clear abuse blocks the whole account until an admin unblocks it: a send, a first send's slice or the last 7 days past 5% hard bounces (at least 10) or 0.3% complaints (at least 3), a spam trap hit, or the email provider stopping the account. Nothing goes out while it's blocked, welcome emails included, and the tracked links in its emails show a page saying they're disabled instead of redirecting; unsubscribe and confirmation links keep working.
 - On MailCheap Cloud, a new account's campaigns go out over 24, 16 and 12 hours, then 8, for its first 30 days. One account per inbox (jane.doe+2@gmail.com is jane.doe@gmail.com), no throwaway inboxes, and 3 new accounts a day per IP address.
 - One-click unsubscribe (RFC 8058 `List-Unsubscribe` headers) and an unsubscribe page, with signed links.
@@ -246,7 +246,7 @@ Without Resend, sign-in codes and alerts go through a tenant of their own, `mc-p
 - **Authenticate everything:** DKIM, SPF through the custom return path, and DMARC on the root domain.
 - **Only email people who asked.** Never import a bought or scraped list. If bots fill your forms, turn on confirmed opt-in.
 - **Warm up a new domain.** Send to your most engaged readers first, and grow each send over a few weeks.
-- **Watch complaints and bounces.** Keep complaints under 0.1% and bounces under 2%. MailCheap pauses a send past 0.08% complaints or 2% bounces, and blocks the account past 0.3% complaints or 5% bounces. Add your domain to [Google Postmaster Tools](https://postmaster.google.com) to see your spam rate at Gmail.
+- **Watch complaints and bounces.** Keep complaints under 0.1% and bounces under 2%. MailCheap pauses a send past 0.08% complaints or 2.5% bounces, and blocks the account past 0.3% complaints or 5% bounces. Add your domain to [Google Postmaster Tools](https://postmaster.google.com) to see your spam rate at Gmail.
 - **Make leaving easy.** Every email has one-click unsubscribe headers and a footer link, which Gmail and Yahoo require.
 - **Clean your list.** Keep list cleanup on to stop emailing people who never open. New newsletters start with it on.
 - **Keep emails under 100 KB**, or Gmail clips them and hides the unsubscribe link.

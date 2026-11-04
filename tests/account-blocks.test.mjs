@@ -243,7 +243,7 @@ describe("what blocks an account", () => {
 		assert.equal((await loadAccount(user)).status, "active");
 		const paused = await loadCampaign(user, warned);
 		assert.deepEqual([paused.status, paused.pauseCode], ["paused", "high_rates"]);
-		assert.match(paused.pauseReason, /^Bounce rate of 5.00% on this campaign \(limit 2.00%\)\. Check where these contacts came from before you resume/);
+		assert.match(paused.pauseReason, /^Bounce rate of 5.00% on this campaign \(limit 2.50%\)\. Check where these contacts came from before you resume/);
 		assert.equal((await loadCampaign(user, other)).status, "sent");
 		const emails = platformEmails.slice(emailsBefore);
 		assert.deepEqual(emails.map(({ to, subject }) => [to, subject]), [[["campaign-warning@example.com"], "[MailCheap] Campaign paused"]], "no admin email");

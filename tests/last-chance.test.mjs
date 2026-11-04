@@ -81,6 +81,6 @@ test("last-chance emails keep their own counters but share the pause limits", ()
 	const level = (stats, lastChance) => getCampaignRateProblem(stats, lastChance)?.level ?? null;
 	assert.equal(level({ sent: 900, complained: 1 }), null);
 	assert.equal(level({ sent: 900, complained: 1 }, { sent: 100, complained: 1 }), "pause", "2 complaints in all");
-	assert.equal(level({ sent: 400, bounced: 2 }, { sent: 100, bounced: 9 }), "pause", "11 bounces of 500 in all, at 2.20%");
-	assert.equal(level({ sent: 400, bounced: 2 }, undefined), null);
+	assert.equal(level({ sent: 400, bounced: 4 }, { sent: 100, bounced: 9 }), "pause", "13 bounces of 500 in all, at 2.60%");
+	assert.equal(level({ sent: 400, bounced: 4 }, undefined), null);
 });
