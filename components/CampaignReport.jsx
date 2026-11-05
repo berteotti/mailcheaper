@@ -15,6 +15,7 @@ import ImageFavicon from "@/components/ImageFavicon";
 import InputCampaignSlug from "@/components/InputCampaignSlug";
 import ListLegend from "@/components/ListLegend";
 import MenuReport from "@/components/MenuReport";
+import RefreshPage from "@/components/RefreshPage";
 import SectionRecipients from "@/components/SectionRecipients";
 import TableCampaignLinks from "@/components/TableCampaignLinks";
 import TabsPage, { PanelTab } from "@/components/TabsPage";
@@ -29,7 +30,7 @@ import { formatCount, formatDate, formatNumber, formatRate, formatRateChange, fo
 import { rateTone } from "@/lib/health";
 import { getLanguageName, getLanguageTag } from "@/lib/languages";
 import { PROVIDER_DOMAINS, PROVIDER_LABELS } from "@/lib/providers";
-import { TIMELINE_HOURS, findPeak, hoursToHalf, reachedOf } from "@/lib/report-stats";
+import { REFRESH_SECONDS, TIMELINE_HOURS, findPeak, hoursToHalf, isRefreshing, reachedOf } from "@/lib/report-stats";
 import { SEND_SPREAD } from "@/lib/send-spread";
 import { timeZoneLabel } from "@/lib/time-zone";
 
@@ -69,6 +70,7 @@ export default function CampaignReport({
 
 	return (
 		<>
+			{isRefreshing(campaign) && <RefreshPage seconds={REFRESH_SECONDS} />}
 			<HeaderPage
 				title={campaign.subject || "Untitled"}
 				backHref="/campaigns"

@@ -5,7 +5,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { getLinkKey } from "../lib/link-stats.js";
 
 const { default: CampaignReport } = await import("../components/CampaignReport.jsx");
+const { default: RefreshPage } = await import("../components/RefreshPage.jsx");
 const { TooltipProvider } = await import("../components/ui/tooltip.jsx");
+const { REFRESH_HOURS, REFRESH_SECONDS } = await import("../lib/report-stats.js");
 
 const ID = "6ad87a2affc219b3be2cc72c";
 const STATS = { recipients: 1000, sent: 1000, delivered: 990, opened: 462, clicked: 70, bounced: 10, complained: 1, unsubscribed: 4 };
@@ -133,4 +135,19 @@ test("the report compares opens and clicks with the average in percent, never in
 	assert.ok(html.includes("−0.4%"));
 	assert.ok(!/\bpts\b/.test(html));
 	assert.ok(!renderReport({ comparison: { isSettled: false, issues: 3, delta: { opened: 0.042, clicked: 0 }, average: { opened: 0.4, clicked: 0 } } }).includes("vs avg"), "not while its opens still come in");
+});
+
+test("as its send goes out, and for a while after it finished, the report takes its numbers again", () => {
+	const inHours = (hours) => new Date(Date.now() + hours * 3_600_000);
+	const refreshOf = (fields) => {
+		const campaign = { _id: ID, subject: "Hello", format: "markdown", markdown: "Hi", stats: STATS, ...fields };
+		const report = CampaignReport({ campaign, newsletter: NEWSLETTER, providers: [], links: null, timeZone: "UTC" });
+		return [report.props.children].flat().find((child) => child?.type === RefreshPage)?.props.seconds;
+	};
+	assert.equal(refreshOf({ status: "sending" }), REFRESH_SECONDS);
+	assert.equal(refreshOf({ status: "paused", pauseCode: "high_rates" }), undefined, "a paused send waits for its owner");
+	assert.equal(refreshOf({ status: "sent", sentAt: inHours(-REFRESH_HOURS / 2) }), REFRESH_SECONDS, "its first opens coming in");
+	assert.equal(refreshOf({ status: "sent", sentAt: inHours(-REFRESH_HOURS / 2).toISOString() }), REFRESH_SECONDS, "a date as the page passes it");
+	assert.equal(refreshOf({ status: "sent", sentAt: inHours(-REFRESH_HOURS) }), undefined);
+	assert.equal(refreshOf({ status: "canceled" }), undefined);
 });
