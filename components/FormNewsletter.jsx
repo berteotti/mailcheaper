@@ -3,10 +3,12 @@
 import { useActionState, useDeferredValue, useEffect, useMemo, useState, useTransition } from "react";
 import { ExternalLink, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { addDefaultAuthor, setDefaultAuthor } from "@/app/(app)/campaigns/actions";
 import { saveNewsletter, sendWelcomeTest } from "@/app/(app)/newsletters/actions";
 import ButtonPreview from "@/components/ButtonPreview";
 import ButtonSendTest from "@/components/ButtonSendTest";
 import InputImage from "@/components/InputImage";
+import PickerAuthor from "@/components/PickerAuthor";
 import PreviewEmail from "@/components/PreviewEmail";
 import StatusSaved from "@/components/StatusSaved";
 import { Button } from "@/components/ui/button";
@@ -31,7 +33,8 @@ import { prefillWelcome } from "@/lib/welcome-content";
 const IMAGE_PREVIEW_PATTERN = /^(https:\/\/\S+\.\S{2,}\/\S+|\/\S+\.\w{3,4})$/;
 
 // footer: what goes after the sections, above the save bar.
-export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testRecipients, cleanupTotals, footer }) {
+// authors: an existing newsletter's, { list, defaultId, suggestion } (FieldAuthor).
+export default function FormNewsletter({ newsletter, domains, sharedDomain, isSendingEnabled, testRecipients, cleanupTotals, footer, authors = null }) {
 	const paywall = usePaywall();
 	const hasPlan = paywall?.hasPlan ?? true;
 	const archiveHost = domains.find(({ archiveHostVerified }) => archiveHostVerified)?.archiveHost;
@@ -237,6 +240,7 @@ export default function FormNewsletter({ newsletter, domains, sharedDomain, isSe
 				<Field label="Reply-to">
 					<Input name="replyTo" type="email" defaultValue={newsletter?.replyTo} placeholder="Optional" />
 				</Field>
+				{authors && <FieldAuthor newsletterId={newsletter._id} {...authors} />}
 				<Field label="Postal address" hint="Shown in the footer of every email. Anti-spam laws require one.">
 					<Textarea
 						name="postalAddress"
@@ -572,6 +576,36 @@ function getFromHint({ isShared, isDomainUnverified, fromDomain, hasDomains }) {
 	if (isDomainUnverified) return `${fromDomain} isn't verified yet. Emails wait until its DNS records are in.`;
 	if (!fromDomain && !hasDomains) return "Add a domain on the Domains page to send from it";
 	return null;
+}
+
+// Who new issues start with (lib/authors.js), saved as soon as it's picked, apart from the form.
+function FieldAuthor({ newsletterId, list, defaultId, suggestion }) {
+	const [authors, setAuthors] = useState(list);
+	const [chosenId, setChosenId] = useState(defaultId);
+	const authorId = authors.some(({ id }) => id === chosenId) ? chosenId : (authors[0]?.id ?? null);
+
+	return (
+		<div className="grid gap-2 px-4 py-3 sm:grid-cols-[9rem_minmax(0,1fr)] sm:gap-4">
+			<span className="text-sm text-muted-foreground sm:pt-2">Default author</span>
+			<span className="flex min-w-0 flex-col gap-1.5">
+				<PickerAuthor
+					variant="field"
+					authors={authors}
+					authorId={authorId}
+					suggestion={suggestion}
+					onPick={setDefaultAuthor}
+					onAdd={(values) => addDefaultAuthor(newsletterId, values)}
+					onAuthorsChange={setAuthors}
+					onAuthorChange={setChosenId}
+				/>
+				<span className="text-xs text-muted-foreground">
+					{authors.length > 0
+						? "New issues start with this author, and each can have its own. Readers see their name, and replies to their issues go to their email."
+						: "Who writes your issues: readers see their name, and replies go to their email. Without one, issues go out without a byline."}
+				</span>
+			</span>
+		</div>
+	);
 }
 
 function Field({ label, hint, isWarning, children }) {

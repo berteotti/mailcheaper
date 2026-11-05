@@ -8,8 +8,10 @@ import {
 	deleteCampaignEdition,
 	duplicateCampaign,
 	saveCampaign,
+	addCampaignAuthor,
 	saveCampaignEdition,
 	sendTestCampaign,
+	setCampaignAuthor,
 	setCampaignLanguage,
 } from "@/app/(app)/campaigns/actions";
 import AvatarNewsletter from "@/components/AvatarNewsletter";
@@ -25,6 +27,7 @@ import GatePlan from "@/components/GatePlan";
 import HeaderPage from "@/components/HeaderPage";
 import InputCampaignSlug from "@/components/InputCampaignSlug";
 import ListChecks from "@/components/ListChecks";
+import PickerAuthor from "@/components/PickerAuthor";
 import PreviewEmail from "@/components/PreviewEmail";
 import TabsEditions from "@/components/TabsEditions";
 import { Button } from "@/components/ui/button";
@@ -35,6 +38,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { getAuthorByline } from "@/lib/author-rules";
 import { getAddableLanguages, getEditionMatcher } from "@/lib/editions";
 import { formatNumber } from "@/lib/format";
 import { DEFAULT_LANGUAGE, getLanguageName, getLanguageTag, matchLanguage, splitLanguage } from "@/lib/languages";
@@ -78,7 +82,12 @@ export default function FormCampaign({
 	emailsLeft,
 	warmup,
 	newContacts,
+	authors: initialAuthors = [],
+	authorSuggestion,
 }) {
+	const [authors, setAuthors] = useState(initialAuthors);
+	const [authorId, setAuthorId] = useState(() => (initialAuthors.some(({ id }) => id === campaign.authorId) ? campaign.authorId : null));
+	const author = authors.find(({ id }) => id === authorId) ?? null;
 	const [isDiscardOpen, setIsDiscardOpen] = useState(false);
 	const [deleting, setDeleting] = useState(null);
 	// Each language's subject, preview text and body, saved together: a save sends the ones that changed.
@@ -124,8 +133,9 @@ export default function FormCampaign({
 			previewText: deferredValues.previewText,
 			newsletter,
 			language: activeLanguage,
+			author: getAuthorByline(author, "email"),
 		}),
-		[deferredValues, newsletter, activeLanguage]
+		[deferredValues, newsletter, activeLanguage, author]
 	);
 	const rendered = useMemo(() => renderEmail(content), [content]);
 	const previewHtml = useMemo(() => toPreviewFrame(rendered.html), [rendered.html]);
@@ -414,6 +424,18 @@ export default function FormCampaign({
 								placeholder="Text shown after the subject"
 								maxLength={300}
 								className="h-11 w-full min-w-0 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+							/>
+						</Row>
+						<Row label="Author">
+							<PickerAuthor
+								authors={authors}
+								authorId={authorId}
+								suggestion={authorSuggestion}
+								isOptional
+								onPick={(id) => setCampaignAuthor(campaign._id, id)}
+								onAdd={(values) => addCampaignAuthor(campaign._id, campaign.newsletterId, values)}
+								onAuthorsChange={setAuthors}
+								onAuthorChange={setAuthorId}
 							/>
 						</Row>
 						{archiveUrlBase && active === OWN && (

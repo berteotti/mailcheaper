@@ -38,6 +38,78 @@ export async function saveCampaign(id, values) {
 	return { ok: true };
 }
 
+// Who wrote the draft (components/PickerAuthor.jsx), saved right away. null: none.
+export async function setCampaignAuthor(id, authorId) {
+	const { failure } = await runDashboardAction("update_campaign", { id: String(id), author: authorId ? String(authorId) : null });
+	if (failure) return toFormError(failure);
+	revalidatePath(`/campaigns/${id}`);
+	return { ok: true };
+}
+
+// A new author of the newsletter, who then writes the draft.
+export async function addCampaignAuthor(id, newsletterId, values) {
+	const { output, failure } = await runDashboardAction("create_author", {
+		newsletter: String(newsletterId ?? ""),
+		...readAuthorValues(values),
+	});
+	if (failure) return toFormError(failure);
+	const chosen = await setCampaignAuthor(id, output.id);
+	return chosen.error ? { ...chosen, author: toAuthorOption(output) } : { author: toAuthorOption(output) };
+}
+
+// Who the newsletter's new issues start with, picked on its Sender page and saved right away.
+export async function setDefaultAuthor(authorId) {
+	const { failure } = await runDashboardAction("update_author", { id: String(authorId ?? ""), isDefault: true });
+	if (failure) return toFormError(failure);
+	refreshAuthors();
+	return { ok: true };
+}
+
+// A new author of the newsletter, who then becomes its default one.
+export async function addDefaultAuthor(newsletterId, values) {
+	const { output, failure } = await runDashboardAction("create_author", {
+		newsletter: String(newsletterId ?? ""),
+		...readAuthorValues(values),
+	});
+	if (failure) return toFormError(failure);
+	const chosen = output.isDefault ? { ok: true } : await setDefaultAuthor(output.id);
+	return chosen.error ? { ...chosen, author: toAuthorOption(output) } : { author: toAuthorOption(output) };
+}
+
+export async function editAuthor(authorId, values) {
+	const { output, failure } = await runDashboardAction("update_author", { id: String(authorId ?? ""), ...readAuthorValues(values) });
+	if (failure) return toFormError(failure);
+	refreshAuthors();
+	return { author: toAuthorOption(output) };
+}
+
+export async function removeAuthor(authorId) {
+	const { failure } = await runDashboardAction("delete_author", { id: String(authorId ?? "") });
+	if (failure) return toFormError(failure);
+	refreshAuthors();
+	return { ok: true };
+}
+
+// The editor and the Sender page list the newsletter's authors.
+function refreshAuthors() {
+	revalidatePath("/campaigns", "layout");
+	revalidatePath("/newsletters", "layout");
+}
+
+function readAuthorValues(values) {
+	return {
+		name: String(values?.name ?? "").slice(0, 200),
+		email: String(values?.email ?? "").slice(0, 320),
+		imageUrl: String(values?.imageUrl ?? "").slice(0, 500),
+		showOnWeb: values?.showOnWeb !== false,
+		showInEmails: values?.showInEmails !== false,
+	};
+}
+
+function toAuthorOption({ id, name, email, imageUrl, showOnWeb, showInEmails }) {
+	return { id, name, email, imageUrl, showOnWeb, showInEmails };
+}
+
 // The campaign's own language, or one of its editions.
 export async function saveCampaignEdition(id, language, values) {
 	const { failure } = await runDashboardAction("set_campaign_edition", {

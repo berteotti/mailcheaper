@@ -6,6 +6,7 @@ import FormNewsletter from "@/components/FormNewsletter";
 import HeaderPage from "@/components/HeaderPage";
 import LayoutNarrow from "@/components/LayoutNarrow";
 import { Button } from "@/components/ui/button";
+import { findNewsletterAuthors, getAuthorSuggestion, toAuthorView } from "@/lib/authors";
 import { cleanupTotalsQuery } from "@/lib/cleanup";
 import { getSharedDomain, isSendingEnabled } from "@/lib/config";
 import { getOne } from "@/lib/db";
@@ -23,12 +24,13 @@ export const metadata = { title: "Settings" };
 export default async function SettingsPage() {
 	const { user, account, organization, selected } = await getSelectedNewsletter();
 	if (!selected) redirect(ADD_NEWSLETTER_PATH);
-	const [newsletter, domains, cleanupTotals, deletionBlockers, testRecipients] = await Promise.all([
+	const [newsletter, domains, cleanupTotals, deletionBlockers, testRecipients, { authors, defaultAuthor }] = await Promise.all([
 		getOne("SELECT * FROM newsletters WHERE accountId = ? AND _id = ?", [account._id, selected._id]),
 		findAccountDomains(account._id),
 		getCleanupTotals(account, selected._id),
 		getNewsletterDeletionBlockers(account, selected),
 		listTestRecipients(organization._id, user),
+		findNewsletterAuthors(account, selected._id),
 	]);
 
 	return (
@@ -49,6 +51,11 @@ export default async function SettingsPage() {
 				isSendingEnabled={isSendingEnabled()}
 				testRecipients={testRecipients}
 				cleanupTotals={cleanupTotals}
+				authors={{
+					list: authors.map((author) => toAuthorView(author)),
+					defaultId: defaultAuthor ? String(defaultAuthor._id) : null,
+					suggestion: getAuthorSuggestion({ user, newsletter }),
+				}}
 				footer={<CardDeleteNewsletter newsletter={newsletter} blockers={deletionBlockers} stagger={6} />}
 			/>
 		</LayoutNarrow>

@@ -4,6 +4,7 @@ import CampaignReport from "@/components/CampaignReport";
 import FormCampaign from "@/components/FormCampaign";
 import { getAccountSendProblem, hasActiveSubscription, isBlocked } from "@/lib/account-state";
 import { getArchiveUrls } from "@/lib/archive-hosts";
+import { getAuthorSuggestion, listLiveAuthors, toAuthorView } from "@/lib/authors";
 import { findCampaignLinks } from "@/lib/campaign-links";
 import { readRecipientFilter } from "@/lib/campaign-recipient-rules";
 import { listCampaignRecipients } from "@/lib/campaign-recipients";
@@ -84,13 +85,14 @@ export default async function CampaignPage({ params, searchParams }) {
 		);
 	}
 
-	const [{ audience, reached }, sender, sendTimes, place, newContacts, testRecipients] = await Promise.all([
+	const [{ audience, reached }, sender, sendTimes, place, newContacts, testRecipients, authors] = await Promise.all([
 		getCampaignAudience(campaign, newsletter, editions),
 		loadSender(account, newsletter),
 		getSendTimes(campaign),
 		countStartedCampaigns(account),
 		countNewContacts(account, newsletter._id),
 		listTestRecipients(organization._id, user),
+		listLiveAuthors(account, newsletter._id),
 	]);
 
 	return (
@@ -110,6 +112,8 @@ export default async function CampaignPage({ params, searchParams }) {
 			emailsLeft={plan.emailsLeft}
 			warmup={getWarmup(account, { place })}
 			newContacts={newContacts}
+			authors={authors.map((author) => toAuthorView(author))}
+			authorSuggestion={getAuthorSuggestion({ user, newsletter })}
 		/>
 	);
 }

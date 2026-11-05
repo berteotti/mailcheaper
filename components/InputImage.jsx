@@ -4,19 +4,23 @@ import { useState } from "react";
 import Image from "next/image";
 import { ImagePlus, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import DialogCropImage from "@/components/DialogCropImage";
 import DialogImagePicker, { CHECKERBOARD } from "@/components/DialogImagePicker";
 import { Button } from "@/components/ui/button";
-import { uploadImageFile } from "@/lib/upload-image";
+import { isSquare } from "@/lib/crop-image";
+import { IMAGE_TYPES, IMAGE_TYPE_ERROR, readImageSize, uploadImageFile } from "@/lib/upload-image";
 import { useImageDrop } from "@/lib/use-image-drop";
 import { cn } from "@/lib/utils";
 
 // An image setting: drop a file on it, or open the picker to upload one or reuse an earlier upload. The URL
 // goes with the form under name. isRound: a person's photo, maybe Google's, which can fail to load with a referrer.
-export default function InputImage({ name, defaultValue, label, isRound, onChange }) {
+// isCropped: it has to be square, so a new picture that isn't is cropped first (components/DialogCropImage.jsx).
+export default function InputImage({ name, defaultValue, label, isRound, isCropped = false, onChange }) {
 	const [url, setUrl] = useState(defaultValue ?? "");
 	const [isPickerOpen, setIsPickerOpen] = useState(false);
 	const [isUploading, setIsUploading] = useState(false);
-	const { isDragging, dropProps } = useImageDrop(upload);
+	const [cropSource, setCropSource] = useState(null);
+	const { isDragging, dropProps } = useImageDrop(isCropped ? cropFile : upload);
 
 	function update(value) {
 		setUrl(value);
@@ -33,6 +37,26 @@ export default function InputImage({ name, defaultValue, label, isRound, onChang
 		} finally {
 			setIsUploading(false);
 		}
+	}
+
+	async function cropFile(file) {
+		if (isUploading) return;
+		if (!IMAGE_TYPES.includes(file?.type)) return void toast.error(IMAGE_TYPE_ERROR);
+		const src = URL.createObjectURL(file);
+		if (!isSquare(await readImageSize(src))) return setCropSource({ src, name: file.name });
+		URL.revokeObjectURL(src);
+		upload(file);
+	}
+
+	function closeCrop() {
+		if (cropSource) URL.revokeObjectURL(cropSource.src);
+		setCropSource(null);
+	}
+
+	async function applyCrop(file) {
+		const { url: cropped } = await uploadImageFile(file);
+		update(cropped);
+		closeCrop();
 	}
 
 	return (
@@ -81,7 +105,9 @@ export default function InputImage({ name, defaultValue, label, isRound, onChang
 				onOpenChange={setIsPickerOpen}
 				currentUrl={url}
 				onSelect={(image) => update(image.url)}
+				onFile={isCropped ? cropFile : undefined}
 			/>
+			<DialogCropImage source={cropSource} label={label} isRound={isRound} onCancel={closeCrop} onCrop={applyCrop} />
 		</span>
 	);
 }
