@@ -72,7 +72,7 @@ test("emails link to their web version at the top, the web version doesn't", () 
 		newsletter,
 		webUrl,
 	});
-	assert.match(htmlEmail.html, /<body><div style="display:none[^]*?<\/div><div[^>]*><a href="https:\/\/news\.example\.com\/p\/issue-12"/);
+	assert.match(htmlEmail.html, /<body><div style="display:none[^]*?<\/div><div[^>]*><a class="email-faint" href="https:\/\/news\.example\.com\/p\/issue-12"/);
 	assert.ok(htmlEmail.text.startsWith(`Read online (${webUrl})`), "the hidden preview text stays out of the text part");
 	assert.ok(!htmlEmail.text.includes("&zwnj;"));
 

@@ -24,6 +24,7 @@ import IconWifi from "@/components/IconWifi";
 import LogoGmail from "@/components/LogoGmail";
 import PickerReader from "@/components/PickerReader";
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from "@/components/ui/dialog";
+import { withEmailMode } from "@/lib/email-mode";
 import { openLinksOutside } from "@/lib/email-preview";
 import { SAMPLE_READER } from "@/lib/merge-tags";
 import { useMediaQuery } from "@/lib/use-media-query";
@@ -176,7 +177,7 @@ function Stage({
 }
 
 // A mail app's reading pane: the window's bar, then the message's header scrolling with the email, which takes the
-// pane's whole width and centers itself like inboxes show it. The phone shows the preview text, as an inbox's list does.
+// pane's whole width as inboxes give it. The phone shows the preview text, as an inbox's list does.
 function FrameDesktop({ sender, subject, html }) {
 	return (
 		<div className="flex h-full flex-col overflow-hidden rounded-xl bg-white text-zinc-900 shadow-2xl ring-1 ring-black/10">
@@ -450,7 +451,8 @@ function ScreenEmail({ sender, name, subject, html, backRef, onBack, isHidden })
 	);
 }
 
-// As tall as the email, so the screen around it scrolls the message's header away with the email, as mail apps do.
+// As tall as the email, so the screen around it scrolls the message's header away with the email, as mail apps do. In
+// light, as the mail apps drawn around it show it, whatever the dashboard's mode.
 function FrameEmail({ html }) {
 	// Without allow-scripts nothing in the email runs; same origin only lets the frame be sized, Escape out, and its links
 	// open outside it.
@@ -458,7 +460,7 @@ function FrameEmail({ html }) {
 		<iframe
 			title="Email preview"
 			sandbox="allow-same-origin"
-			srcDoc={html}
+			srcDoc={withEmailMode(html, "light")}
 			onLoad={(event) => {
 				forwardEscape(event.currentTarget);
 				openLinksOutside(event.currentTarget);

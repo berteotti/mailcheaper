@@ -333,10 +333,17 @@ describe("the REST API and MCP with several newsletters", () => {
 
 		let { status, body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { preset: "garden", colors: { accent: "#AA0000" } } });
 		assert.equal(status, 200);
-		assert.deepEqual([body.theme.preset, body.theme.colors.accent, body.theme.customized], ["garden", "#aa0000", ["colors"]]);
+		assert.deepEqual([body.theme.preset, body.theme.colors.accent, body.theme.customized], ["garden", "#aa0000", ["lightColors"]], "colors are the light preset's light ones");
+		assert.equal(body.theme.lightColors.accent, "#aa0000");
+		assert.notEqual(body.theme.darkColors.accent, themes.presets.find(({ id }) => id === "garden").darkColors.accent, "an accent changed in light follows into dark");
 		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { radius: "full" } }));
-		assert.deepEqual([body.theme.colors.accent, body.theme.radius, body.theme.customized], ["#aa0000", "full", ["colors", "radius"]], "changes land on the saved ones");
+		assert.deepEqual([body.theme.colors.accent, body.theme.radius, body.theme.customized], ["#aa0000", "full", ["lightColors", "radius"]], "changes land on the saved ones");
 		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { colors: { accent: null } } }));
+		assert.deepEqual(body.theme.customized, ["radius"]);
+		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { darkColors: { background: "#000000" }, emailAlign: "left" } }));
+		assert.deepEqual([body.theme.darkColors.background, body.theme.emailAlign, body.theme.customized], ["#000000", "left", ["darkColors", "radius", "emailAlign"]]);
+		assert.equal(body.theme.lightColors.background, themes.presets.find(({ id }) => id === "garden").lightColors.background, "light stays the preset's");
+		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { darkColors: null, emailAlign: null } }));
 		assert.deepEqual(body.theme.customized, ["radius"]);
 		({ body } = await api(jane.key, "PATCH", `/newsletters/${alpha}`, { theme: { preset: "midnight" } }));
 		assert.deepEqual([body.theme.preset, body.theme.customized], ["midnight", []]);
