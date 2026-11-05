@@ -150,6 +150,7 @@ describe("picking a contact to preview as", () => {
 		await contact({ email: "a%b@example.com", subscribedAt: daysAgo(6) });
 		await contact({ email: "html@example.com", firstName: "<b>Bo</b> & co", subscribedAt: daysAgo(7) });
 		for (const day of [8, 9, 10]) await contact({ email: `old${day}@example.com`, subscribedAt: daysAgo(day) });
+		await contact({ email: "dana@example.net", subscribedAt: daysAgo(11) });
 		await contact({ email: "johnny@example.com", status: "unsubscribed", subscribedAt: daysAgo(0) });
 		await contact({ email: "jon@example.com", status: "bounced", subscribedAt: daysAgo(0) });
 		await contact({ email: "jody@example.com", status: "pending", subscribedAt: daysAgo(0) });
@@ -158,7 +159,7 @@ describe("picking a contact to preview as", () => {
 
 	after(() => app?.stop());
 
-	test("the picker offers the newsletter's newest active contacts, or finds them by the start of their address", async () => {
+	test("the picker offers the newsletter's newest active contacts, or finds them by any part of their address", async () => {
 		assert.deepEqual(await emails(""), [
 			"joanna@example.com",
 			"jose@example.com",
@@ -171,7 +172,11 @@ describe("picking a contact to preview as", () => {
 		], "the 8 newest");
 		assert.deepEqual(await emails("jo"), ["joanna@example.com", "jose@example.com", "jo@example.com"]);
 		assert.deepEqual(await emails("  JO@ "), ["jo@example.com"], "in any case, around spaces");
-		assert.deepEqual(await emails("anna"), [], "only the start");
+		assert.deepEqual(await emails("anna"), ["joanna@example.com"], "not only the start");
+		assert.deepEqual(await emails("@example.net"), ["dana@example.net"], "everyone at a domain");
+		assert.deepEqual(await emails("*@EXAMPLE.NET"), ["dana@example.net"]);
+		assert.deepEqual(await emails("d*a@*.net"), ["dana@example.net"], "a * stands for any characters");
+		assert.deepEqual(await emails("x*@example.net"), [], "in order: example's x comes after the @");
 		assert.deepEqual(await emails("silva"), [], "not by name");
 		const [joanna] = (await find("joanna")).contacts;
 		assert.deepEqual(
@@ -196,11 +201,12 @@ describe("picking a contact to preview as", () => {
 		}
 	});
 
-	test("what's typed is only ever text: never a pattern or an operator", async () => {
+	test("what's typed is only ever text, where * stands for any characters: never a pattern or an operator", async () => {
 		assert.deepEqual(await emails("a.b"), ["a.b@example.com"], "a dot is a dot");
 		assert.deepEqual(await emails("a_"), ["a_b@example.com"], "an underscore is an underscore");
-		assert.deepEqual(await emails("a%"), ["a%b@example.com"]);
-		for (const query of ["%", "_", "*", ".*", "' OR 1=1 --", "[a-z]", "\\"]) {
+		assert.deepEqual(await emails("%"), ["a%b@example.com"], "and a % a %");
+		assert.deepEqual(await emails("a*b@"), ["a.b@example.com", "a_b@example.com", "a%b@example.com"], "a * is any characters");
+		for (const query of ["' OR 1=1 --", "[a-z]", "\\", "a\\b"]) {
 			assert.deepEqual(await emails(query), [], query);
 		}
 		assert.deepEqual((await find({ $gt: "" })).contacts, [], "an object is read as text");

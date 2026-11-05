@@ -173,8 +173,8 @@ describe("each newsletter's pages only show its own", () => {
 		assert.deepEqual(await shownContacts(jane), ["b1@example.org", "both@example.org"]);
 		assert.deepEqual(await shownCampaigns(jane), ["Beta issue"]);
 		const { account } = await getView(jane);
-		const counts = await m.contactQueries.findContactsPage(account, { newsletterId: beta, query: "a" });
-		assert.equal(counts.totalAll, 0, "searching Beta never finds Alpha's a1 and a2");
+		const counts = await m.contactQueries.findContactsPage(account, { newsletterId: beta, query: "a1" });
+		assert.equal(counts.totalAll, 0, "searching Beta never finds Alpha's a1");
 	});
 
 	test("new drafts and imports go to the newsletter they name, after it's checked against the account", async () => {

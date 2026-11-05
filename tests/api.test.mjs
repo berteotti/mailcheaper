@@ -527,6 +527,33 @@ describe("contacts", () => {
 		assert.equal((await m.exportRoute.GET(new Request(forged))).status, 401);
 	});
 
+	test("a search finds any part of the address, where * stands for any characters, and the counts and the export follow it", async () => {
+		const user = await customer("contacts-search@example.com");
+		const contact = (email, subscribedAt, status = "active") =>
+			insertRow("contacts", { accountId: user.accountId, newsletterId: user.newsletterId, email, status, subscribedAt: new Date(subscribedAt) });
+		await contact("jane@example.com", "2026-01-04");
+		await contact("mary-jane@example.org", "2026-01-03");
+		await contact("sam@example.org", "2026-01-02", "unsubscribed");
+		await contact("joe@example.net", "2026-01-01");
+		await contact("under_score@example.net", "2025-12-31");
+		const search = async (text) => (await api(user.key, "GET", `/contacts?search=${encodeURIComponent(text)}`)).body;
+		const emails = async (text) => (await search(text)).contacts.map(({ email }) => email);
+
+		assert.deepEqual(await emails("@example.org"), ["mary-jane@example.org", "sam@example.org"], "everyone at a domain");
+		assert.deepEqual(await emails("*@Example.org"), ["mary-jane@example.org", "sam@example.org"]);
+		assert.deepEqual(await emails("jane"), ["jane@example.com", "mary-jane@example.org"], "anywhere in the address");
+		assert.deepEqual(await emails("jane*.org"), ["mary-jane@example.org"]);
+		assert.deepEqual(await emails("org*jane"), [], "in order");
+		assert.deepEqual(await emails("mary_jane"), [], "LIKE's _ is only an underscore");
+		assert.deepEqual(await emails("%"), [], "and its % only a %");
+		assert.deepEqual(await emails("_score"), ["under_score@example.net"]);
+		assert.equal((await emails("*")).length, 5, "a * alone is everyone");
+		const { counts } = await search("*@example.org");
+		assert.deepEqual([counts.active, counts.unsubscribed], [1, 1]);
+
+		assert.equal((await api(user.key, "GET", `/contacts/export?search=${encodeURIComponent("*@example.org")}`)).body.count, 2);
+	});
+
 	test("languages: on signup and import, changed one at a time, and filtered with the newsletter's for contacts without one", async () => {
 		const user = await customer("languages-api@example.com");
 		await api(user.key, "PATCH", `/newsletters/${user.slug}`, { language: "fr" });

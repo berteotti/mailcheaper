@@ -12,7 +12,7 @@ const SEARCH_DELAY_MS = 200;
 const FINE_POINTER = "(pointer: fine)";
 
 // Who the full-screen preview shows the email to: the sample reader, or one of the newsletter's active contacts, the
-// newest first or found by the start of their address. contact: null for the sample reader. The search field keeps the
+// newest first or found by any part of their address. contact: null for the sample reader. The search field keeps the
 // focus while the list is announced as its options. The list is dark in both themes, like the preview's controls around
 // it, and opaque, so the dimmed dashboard never shows through it.
 export default function PickerReader({ newsletterId, contact, onChange }) {
@@ -116,7 +116,7 @@ export default function PickerReader({ newsletterId, contact, onChange }) {
 						aria-expanded="true"
 						aria-controls={listId}
 						aria-activedescendant={optionId(activeIndex)}
-						placeholder="Search by email"
+						placeholder="Search by email or domain"
 						autoComplete="off"
 						autoCorrect="off"
 						autoCapitalize="off"
@@ -164,7 +164,7 @@ export default function PickerReader({ newsletterId, contact, onChange }) {
 					</div>
 					{results && contacts.length === 0 && (
 						<p role="status" className="px-2 pt-2 pb-2.5 text-sm text-pretty text-muted-foreground">
-							{results.error ?? (results.query ? `No active contact's address starts with “${results.query}”.` : "No active contacts yet.")}
+							{results.error ?? (results.query ? `No active contact's address matches “${results.query}”.` : "No active contacts yet.")}
 						</p>
 					)}
 				</div>

@@ -80,7 +80,7 @@ export async function setCampaignLanguage(id, language) {
 	return { ok: true };
 }
 
-// The full-screen preview's reader picker: the newsletter's active contacts whose address starts with what's typed, the
+// The full-screen preview's reader picker: the newsletter's active contacts with what's typed in their address, the
 // newest before anything is. Without a newsletter, list_contacts would look through every one of the account's.
 export async function findPreviewContacts(newsletterId, query) {
 	const newsletter = String(newsletterId ?? "").trim();
